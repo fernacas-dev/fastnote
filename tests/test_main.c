@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "editor.h"
+#include "filetype.h"
+#include "highlight.h"
 #include "text_buffer.h"
 
 static int failures = 0;
@@ -184,6 +186,95 @@ static void test_undo_coalesce(void) {
     editor_quit(&e);
 }
 
+static void test_filetype(void) {
+    CHECK(strcmp(filetype_of("/a/b/main.c"), "C") == 0);
+    CHECK(strcmp(filetype_of("x.H"), "C") == 0);
+    CHECK(strcmp(filetype_of("a.cpp"), "C++") == 0);
+    CHECK(strcmp(filetype_of("A.Java"), "Java") == 0);
+    CHECK(strcmp(filetype_of("index.HTML"), "HTML") == 0);
+    CHECK(strcmp(filetype_of("app.py"), "Python") == 0);
+    CHECK(strcmp(filetype_of("data.JSON"), "JSON") == 0);
+    CHECK(strcmp(filetype_of("notes.md"), "Markdown") == 0);
+    CHECK(strcmp(filetype_of("run.sh"), "Shell") == 0);
+    CHECK(strcmp(filetype_of("Makefile"), "Makefile") == 0);
+    CHECK(strcmp(filetype_of("/x/Dockerfile"), "Docker") == 0);
+    CHECK(strcmp(filetype_of("archive.tar.gz"), "Plain Text") == 0);
+    CHECK(strcmp(filetype_of("noext"), "Plain Text") == 0);
+    CHECK(strcmp(filetype_of(".gitignore"), "Plain Text") == 0);
+    CHECK(strcmp(filetype_of(NULL), "Plain Text") == 0);
+    CHECK(strcmp(filetype_of(""), "Plain Text") == 0);
+}
+
+static void test_highlight(void) {
+    uint8_t k[128];
+    uint8_t st;
+    // C keywords, comment, string, number, preproc.
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "int x = 42;", 10, 0, k, sizeof(k));
+    CHECK(st == 0);
+    CHECK(k[0] == HL_KEYWORD && k[2] == HL_KEYWORD);
+    CHECK(k[8] == HL_NUMBER && k[9] == HL_NUMBER);
+    CHECK(k[4] == HL_NORMAL);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "// hi", 5, 0, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_COMMENT && k[4] == HL_COMMENT);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "char *s = \"a\\\"b\";", 17, 0, k,
+                      sizeof(k));
+    CHECK(st == 0);
+    CHECK(k[4] == HL_NORMAL && k[10] == HL_STRING && k[14] == HL_STRING);
+    CHECK(k[16] == HL_NORMAL);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "#include <x>", 11, 0, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_PREPROC && k[10] == HL_PREPROC);
+    // Multi-line block comment threads state across lines.
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "/* open", 7, 0, k, sizeof(k));
+    CHECK(st == 1 && k[0] == HL_COMMENT);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "still", 5, st, k, sizeof(k));
+    CHECK(st == 1 && k[0] == HL_COMMENT);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_C, "end */ x", 8, st, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_COMMENT && k[7] == HL_NORMAL);
+    // Python: comment, triple-quote state, keywords.
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_PY, "def f(): # c", 12, 0, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_KEYWORD && k[9] == HL_COMMENT);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_PY, "x = '''start", 11, 0, k, sizeof(k));
+    CHECK(st == 4 && k[4] == HL_STRING);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_PY, "mid", 3, st, k, sizeof(k));
+    CHECK(st == 4 && k[0] == HL_STRING);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_PY, "end''' + 1", 10, st, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_STRING && k[9] == HL_NUMBER);
+    // HTML tags, attributes, comments.
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_HTML, "<div class=\"a\">x", 16, 0, k,
+                      sizeof(k));
+    CHECK(st == 0 && k[0] == HL_TAG && k[1] == HL_TAG);
+    CHECK(k[11] == HL_STRING && k[13] == HL_STRING);
+    CHECK(k[14] == HL_TAG && k[15] == HL_NORMAL);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_HTML, "<!-- a", 6, 0, k, sizeof(k));
+    CHECK(st == 1);
+    memset(k, 0, sizeof(k));
+    st = hl_scan_line(HLANG_HTML, "b --> t", 7, st, k, sizeof(k));
+    CHECK(st == 0 && k[0] == HL_COMMENT && k[6] == HL_NORMAL);
+    // Language mapping.
+    CHECK(hl_lang_for_name("C") == HLANG_C);
+    CHECK(hl_lang_for_name("Java") == HLANG_JAVA);
+    CHECK(hl_lang_for_name("TypeScript") == HLANG_JS);
+    CHECK(hl_lang_for_name("Python") == HLANG_PY);
+    CHECK(hl_lang_for_name("Shell") == HLANG_SH);
+    CHECK(hl_lang_for_name("HTML") == HLANG_HTML);
+    CHECK(hl_lang_for_name("Plain Text") == HLANG_NONE);
+    CHECK(hl_lang_for_name(NULL) == HLANG_NONE);
+    CHECK(hl_lang_for_name("CSS") == HLANG_NONE);
+}
+
 static void test_goal_col(void) {
     Editor e;
     CHECK(editor_init(&e));
@@ -211,6 +302,8 @@ int main(void) {
     test_editor_selection();
     test_undo_coalesce();
     test_goal_col();
+    test_filetype();
+    test_highlight();
     if (failures == 0)
         printf("all tests passed\n");
     return failures != 0;

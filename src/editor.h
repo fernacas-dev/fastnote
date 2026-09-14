@@ -2,6 +2,7 @@
 #define FASTNOTE_EDITOR_H
 
 #include "text_buffer.h"
+#include "highlight.h"
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -39,6 +40,14 @@ typedef struct {
     bool has_path;
     bool modified;
     UndoStack undo;
+    // Syntax highlighting: hl_lang selects the tokenizer (HLANG_NONE
+    // disables), hl_on is the user toggle, and hl_clean tracks how far the
+    // per-line block states in buf.lstate are valid (states[0..hl_clean]).
+    // Edits invalidate from the edited line; the renderer recomputes
+    // forward with a per-frame budget (see editor_hl_update).
+    HlLang hl_lang;
+    bool hl_on;
+    size_t hl_clean;
 } Editor;
 
 bool editor_init(Editor *e);
@@ -91,6 +100,12 @@ bool editor_undo(Editor *e);
 bool editor_redo(Editor *e);
 bool editor_can_undo(const Editor *e);
 bool editor_can_redo(const Editor *e);
+
+// Extend valid highlight states forward through line need (inclusive),
+// spending at most budget lines. Returns true when states[0..need] are
+// valid. Stops early once recomputation reaches a previously valid region
+// with an unchanged state (everything downstream still matches).
+bool editor_hl_update(Editor *e, HlLang lang, size_t need, int budget);
 
 // Line/column <-> offset helpers (columns in characters, 0-based here).
 size_t editor_offset_of(const Editor *e, size_t line, size_t col_chars);

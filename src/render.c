@@ -1,6 +1,37 @@
 #include "render.h"
 #include "app.h"
+#include "filetype.h"
+#include "highlight.h"
 #include "ui.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Highlight recompute budget per frame (lines) and per-line kinds cap
+// (bytes). Beyond the cap a line draws unhighlighted; the draw loop also
+// stops past the viewport, so pathological single-line files stay fast.
+#define HL_BUDGET_LINES 3000
+#define HL_KINDS_CAP 65536
+
+static SDL_Color hl_kind_color(const App *app, uint8_t kind) {
+    switch (kind) {
+    case HL_KEYWORD:
+        return app->theme.hl_keyword;
+    case HL_COMMENT:
+        return app->theme.hl_comment;
+    case HL_STRING:
+        return app->theme.hl_string;
+    case HL_NUMBER:
+        return app->theme.hl_number;
+    case HL_PREPROC:
+        return app->theme.hl_preproc;
+    case HL_TAG:
+        return app->theme.hl_tag;
+    default:
+        return app->theme.foreground;
+    }
+}
 
 // Draw one visible line: selection background, then glyphs.
 // All coordinates are framebuffer (physical) pixels.
@@ -13,6 +44,29 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
 
     size_t ls = tb_line_start(&e->buf, line);
     size_t llen = tb_line_len(&e->buf, line);
+
+    // Tokenize this line when its block state is known. Kinds cover the
+    // first HL_KINDS_CAP bytes; anything past that draws unhighlighted.
+    HlLang lang = app->ed.hl_on ? app->ed.hl_lang : HLANG_NONE;
+    const uint8_t *kinds = NULL;
+    size_t scanned = 0;
+    if (lang != HLANG_NONE && e->buf.lstate && line <= e->hl_clean) {
+        scanned = llen < HL_KINDS_CAP ? llen : HL_KINDS_CAP;
+        if (scanned > app->hl_scratch_cap) {
+            uint8_t *ns = realloc(app->hl_scratch, scanned);
+            if (ns) {
+                app->hl_scratch = ns;
+                app->hl_scratch_cap = scanned;
+            } else {
+                scanned = 0; // OOM: draw this line unhighlighted
+            }
+        }
+        if (scanned > 0) {
+            hl_scan_line(lang, e->buf.data + ls, scanned,
+                         e->buf.lstate[line], app->hl_scratch, scanned);
+            kinds = app->hl_scratch;
+        }
+    }
 
     // Selection background for this line. The overlap test must prove the
     // selection actually touches this line: with b < ls the subtraction
@@ -72,10 +126,10 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
             if (g) {
                 if (g->tex && pen + (float)(g->bx + g->w) > area_x &&
                     pen < end_x) {
-                    SDL_FRect dst = {pen + (float)g->bx,
-                                     baseline - (float)g->by, (float)g->w,
-                                     (float)g->h};
-                    SDL_RenderTexture(ren, g->tex, NULL, &dst);
+                    SDL_Color gc = (kinds && i < scanned)
+                                       ? hl_kind_color(app, kinds[i])
+                                       : app->theme.foreground;
+                    font_draw_glyph(ren, f, g, pen, baseline, gc);
                 }
                 pen += (float)g->adv;
                 if (pen - area_x > area_w + 64.0f && i > 0) {
@@ -89,7 +143,7 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
     }
 }
 
-void render_frame(App *app) {
+bool render_frame(App *app) {
     Editor *e = &app->ed;
     Font *f = &app->font;
     SDL_Renderer *ren = app->ren;
@@ -97,9 +151,11 @@ void render_frame(App *app) {
 
     int tab_w = font_tab_width(f, FN_TAB_WIDTH_COLS);
 
+    int side = (app->project.has && app->project.visible) ? m->sidebar_w : 0;
+    int gutter = ui_gutter_w(f, m, e->buf.nlines);
     float area_y = (float)m->menu_h;
     float area_h = (float)(app->win_h - m->menu_h - m->status_h);
-    float area_x = (float)m->pad_x;
+    float area_x = (float)m->pad_x + (float)(side + gutter);
     float area_w = (float)app->win_w - area_x - (float)m->pad_x / 2.0f;
     if (area_w < 0)
         area_w = 0;
@@ -109,19 +165,46 @@ void render_frame(App *app) {
         visible = 1;
     editor_clamp_scroll(e, visible);
 
+    // Bring highlight block states up to the last visible line, bounded by
+    // the per-frame budget. Unfinished work keeps the frame "pending".
+    bool hl_done = true;
+    if (e->hl_on && e->hl_lang != HLANG_NONE && e->buf.nlines > 0) {
+        size_t last = e->scroll_line + visible - 1;
+        if (last >= e->buf.nlines)
+            last = e->buf.nlines - 1;
+        hl_done = editor_hl_update(e, e->hl_lang, last, HL_BUDGET_LINES);
+    }
+
     // Background.
     SDL_SetRenderDrawColor(ren, app->theme.background.r,
                            app->theme.background.g, app->theme.background.b,
                            0xFF);
     SDL_RenderClear(ren);
 
+    // Project sidebar (its own scroll/rows; editor area starts after it).
+    if (side > 0) {
+        project_draw(ren, f, &app->theme, m, &app->project, m->menu_h,
+                     app->win_h - m->status_h,
+                     e->has_path ? e->path : NULL);
+    }
+
     // Visible lines only.
+    size_t cursor_line = tb_line_of(&e->buf, e->cursor);
     for (size_t i = 0; i < visible; i++) {
         size_t line = e->scroll_line + i;
         if (line >= e->buf.nlines)
             break;
-        draw_line(app, line, area_y + (float)i * (float)f->line_h, area_x,
-                  area_w, tab_w);
+        float top_y = area_y + (float)i * (float)f->line_h;
+        // Gutter: right-aligned number; current line in foreground.
+        char num[32];
+        snprintf(num, sizeof(num), "%zu", line + 1);
+        float nw = ui_text_width(f, num, strlen(num));
+        SDL_Color nc =
+            line == cursor_line ? app->theme.foreground : app->theme.line_number;
+        ui_draw_text(ren, f, num, strlen(num),
+                     area_x - nw - (float)m->pad_x, top_y + (float)f->asc,
+                     nc);
+        draw_line(app, line, top_y, area_x, area_w, tab_w);
     }
 
     // Cursor (blinking).
@@ -152,9 +235,11 @@ void render_frame(App *app) {
 
     size_t ln, col;
     editor_line_col(e, &ln, &col);
+    const char *lang = filetype_of(e->has_path ? e->path : NULL);
     ui_draw_chrome(ren, f, &app->theme, m, app->win_w, app->win_h, &app->menu,
-                   app->base_font_px, ln, col, e->modified);
+                   app->base_font_px, ln, col, e->modified, lang);
     ui_draw_modal(ren, f, &app->theme, m, &app->modal, app->win_w, app->win_h);
 
     SDL_RenderPresent(ren);
+    return hl_done;
 }

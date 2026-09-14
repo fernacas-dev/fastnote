@@ -16,6 +16,7 @@ UiMetrics ui_metrics_for(float scale) {
     m.status_h = (int)(FN_STATUS_H * scale + 0.5f);
     m.pad_x = (int)(FN_PAD_X * scale + 0.5f);
     m.cursor_w = (int)(FN_CURSOR_W * scale + 0.5f);
+    m.sidebar_w = (int)(220.0f * scale + 0.5f);
     if (m.menu_h < 1)
         m.menu_h = 1;
     if (m.status_h < 1)
@@ -24,12 +25,15 @@ UiMetrics ui_metrics_for(float scale) {
         m.pad_x = 1;
     if (m.cursor_w < 1)
         m.cursor_w = 1;
+    if (m.sidebar_w < 1)
+        m.sidebar_w = 1;
     return m;
 }
 
 static const MenuItem file_items[] = {
     {"New", "Ctrl+N", ACT_NEW},
     {"Open", "Ctrl+O", ACT_OPEN},
+    {"Open Folder", "", ACT_OPEN_FOLDER},
     {"Save", "Ctrl+S", ACT_SAVE},
     {"Save As", "Ctrl+Shift+S", ACT_SAVE_AS},
     {"Exit", "Ctrl+Q", ACT_EXIT},
@@ -46,6 +50,8 @@ static const MenuItem view_items[] = {
     {"Increase Font Size", "Ctrl++", ACT_FONT_INC},
     {"Decrease Font Size", "Ctrl+-", ACT_FONT_DEC},
     {"Reset Font Size", "Ctrl+0", ACT_FONT_RESET},
+    {"Toggle Sidebar", "Ctrl+B", ACT_TOGGLE_SIDEBAR},
+    {"Toggle Highlight", "", ACT_TOGGLE_HL},
 };
 
 int ui_menu_count(void) { return 3; }
@@ -74,7 +80,7 @@ int ui_menu_items(int m, const MenuItem **out) {
 // --- Text helpers ---
 
 float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
-                   float x, float baseline_y) {
+                   float x, float baseline_y, SDL_Color color) {
     float pen = x;
     size_t i = 0;
     while (i < n) {
@@ -84,11 +90,7 @@ float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
             break;
         const Glyph *g = font_get(f, cp);
         if (g) {
-            if (g->tex) {
-                SDL_FRect dst = {pen + (float)g->bx, baseline_y - (float)g->by,
-                                 (float)g->w, (float)g->h};
-                SDL_RenderTexture(ren, g->tex, NULL, &dst);
-            }
+            font_draw_glyph(ren, f, g, pen, baseline_y, color);
             pen += (float)g->adv;
         }
         i += k;
@@ -110,6 +112,18 @@ float ui_text_width(Font *f, const char *s, size_t n) {
         i += k;
     }
     return w;
+}
+
+int ui_gutter_w(Font *f, const UiMetrics *m, size_t total_lines) {
+    // Decimal digits of the last line number (total_lines >= 1 always).
+    int digits = 1;
+    for (size_t t = total_lines; t >= 10; t /= 10)
+        digits++;
+    const Glyph *zero = font_get(f, (uint32_t)'0');
+    int adv = (zero && zero->adv > 0) ? zero->adv : f->px / 2;
+    if (adv < 1)
+        adv = 1;
+    return digits * adv + (int)(2.0f * (float)m->pad_x + 0.5f);
 }
 
 // --- Menu geometry (all in framebuffer pixels) ---
@@ -296,7 +310,8 @@ static void fill_rect(SDL_Renderer *ren, SDL_Color c, const SDL_FRect *r) {
 
 void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                     const UiMetrics *m, int win_w, int win_h, MenuState *st,
-                    int font_px, size_t line, size_t col, bool modified) {
+                    int font_px, size_t line, size_t col, bool modified,
+                    const char *lang) {
     float baseline =
         (float)f->asc + ((float)m->menu_h - (float)f->line_h) / 2.0f;
 
@@ -310,14 +325,14 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
             fill_rect(ren, th->selection, &hl);
         }
         const char *t = ui_menu_title(i);
-        ui_draw_text(ren, f, t, strlen(t), tx + (float)m->pad_x, baseline);
+        ui_draw_text(ren, f, t, strlen(t), tx + (float)m->pad_x, baseline, th->foreground);
     }
     // Font-size indicator, right aligned (user-facing, unscaled size).
     char sizebuf[32];
     snprintf(sizebuf, sizeof(sizebuf), "%d px", font_px);
     float sw = ui_text_width(f, sizebuf, strlen(sizebuf));
     ui_draw_text(ren, f, sizebuf, strlen(sizebuf),
-                 (float)win_w - sw - (float)m->pad_x, baseline);
+                 (float)win_w - sw - (float)m->pad_x, baseline, th->foreground);
 
     // Dropdown.
     SDL_FRect dd;
@@ -338,11 +353,11 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                 fill_rect(ren, th->selection, &hl);
             }
             ui_draw_text(ren, f, items[i].label, strlen(items[i].label),
-                         dd.x + SC(m, 14), ib + ih * (float)i);
+                         dd.x + SC(m, 14), ib + ih * (float)i, th->foreground);
             float scw = ui_text_width(f, items[i].shortcut,
                                       strlen(items[i].shortcut));
             ui_draw_text(ren, f, items[i].shortcut, strlen(items[i].shortcut),
-                         dd.x + dd.w - scw - SC(m, 14), ib + ih * (float)i);
+                         dd.x + dd.w - scw - SC(m, 14), ib + ih * (float)i, th->foreground);
         }
     }
 
@@ -358,16 +373,24 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                   ((float)m->status_h - (float)f->line_h) / 2.0f;
     char lc[64];
     snprintf(lc, sizeof(lc), "Ln %zu, Col %zu", line, col);
-    ui_draw_text(ren, f, lc, strlen(lc), (float)m->pad_x, sbase);
+    ui_draw_text(ren, f, lc, strlen(lc), (float)m->pad_x, sbase, th->foreground);
     const char *enc = "UTF-8";
     float ew = ui_text_width(f, enc, strlen(enc));
     float ex = (float)win_w - ew - (float)m->pad_x;
+    float rx = ex; // right-to-left cursor for the optional items
     if (modified) {
         const char *mod = "Modified  ";
         float mw = ui_text_width(f, mod, strlen(mod));
-        ui_draw_text(ren, f, mod, strlen(mod), ex - mw, sbase);
+        ui_draw_text(ren, f, mod, strlen(mod), rx - mw, sbase, th->foreground);
+        rx -= mw;
     }
-    ui_draw_text(ren, f, enc, strlen(enc), ex, sbase);
+    if (lang && lang[0]) {
+        char lg[64];
+        snprintf(lg, sizeof(lg), "%s  ", lang);
+        float lw = ui_text_width(f, lg, strlen(lg));
+        ui_draw_text(ren, f, lg, strlen(lg), rx - lw, sbase, th->foreground);
+    }
+    ui_draw_text(ren, f, enc, strlen(enc), ex, sbase, th->foreground);
 }
 
 // Count newlines to lay out a multi-line message box.
@@ -406,7 +429,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
 
     float tx = box.x + SC(m, 16);
     float baseline = box.y + SC(m, 14) + (float)f->asc;
-    ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline);
+    ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline, th->foreground);
     baseline += SC(m, 10);
     // Message lines.
     const char *p = modal->msg;
@@ -414,7 +437,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
         const char *nl = strchr(p, '\n');
         size_t n = nl ? (size_t)(nl - p) : strlen(p);
         baseline += (float)f->line_h + SC(m, 4);
-        ui_draw_text(ren, f, p, n, tx, baseline);
+        ui_draw_text(ren, f, p, n, tx, baseline, th->foreground);
         if (!nl)
             break;
         p = nl + 1;
@@ -433,7 +456,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
         float lw =
             ui_text_width(f, modal->btn_label[i], strlen(modal->btn_label[i]));
         ui_draw_text(ren, f, modal->btn_label[i], strlen(modal->btn_label[i]),
-                     bx + (btn_w - lw) / 2.0f, by + SC(m, 6) + (float)f->asc);
+                     bx + (btn_w - lw) / 2.0f, by + SC(m, 6) + (float)f->asc, th->foreground);
         bx -= btn_w + SC(m, 10);
     }
 }

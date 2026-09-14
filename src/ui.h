@@ -24,6 +24,9 @@ typedef enum {
     ACT_FONT_INC,
     ACT_FONT_DEC,
     ACT_FONT_RESET,
+    ACT_OPEN_FOLDER,
+    ACT_TOGGLE_SIDEBAR,
+    ACT_TOGGLE_HL,
 } MenuAction;
 
 typedef struct {
@@ -47,6 +50,7 @@ typedef struct {
     int status_h;
     int pad_x;
     int cursor_w;
+    int sidebar_w;
 } UiMetrics;
 
 UiMetrics ui_metrics_for(float scale);
@@ -101,13 +105,16 @@ ModalButton ui_modal_key(ModalState *m, SDL_Keycode key);
 
 // --- Drawing ---
 float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
-                   float x, float baseline_y);
+                   float x, float baseline_y, SDL_Color color);
 float ui_text_width(Font *f, const char *s, size_t n);
+// Gutter width for total_lines (digits of the last line number + padding).
+int ui_gutter_w(Font *f, const UiMetrics *m, size_t total_lines);
 // Menu bar + dropdown + status bar. font_px is the user-facing (unscaled)
-// size shown in the menu bar.
+// size shown in the menu bar; lang is the status-bar language label.
 void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                     const UiMetrics *m, int win_w, int win_h, MenuState *st,
-                    int font_px, size_t line, size_t col, bool modified);
+                    int font_px, size_t line, size_t col, bool modified,
+                    const char *lang);
 void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
                    const UiMetrics *m, ModalState *modal, int win_w,
                    int win_h);

@@ -83,7 +83,6 @@ static size_t glyph_hash(uint32_t cp) {
 bool font_init(Font *f, SDL_Renderer *ren, const char *path, int px) {
     memset(f, 0, sizeof(*f));
     f->renderer = ren;
-    f->color = (SDL_Color){0xD4, 0xD4, 0xD4, 0xFF};
     f->px = px;
 
     const char *found = pick_font(path);
@@ -148,8 +147,10 @@ bool font_set_size(Font *f, int px) {
     return cache_alloc(f);
 }
 
-// Rasterize a FreeType bitmap (8-bit gray) into a pre-colored RGBA texture.
-// SDL_PIXELFORMAT_RGBA32 guarantees R,G,B,A byte order in memory.
+// Rasterize a FreeType bitmap (8-bit gray) into a white RGBA texture; the
+// drawing color is applied later via SDL_SetTextureColorMod so one cached
+// glyph serves any theme color. SDL_PIXELFORMAT_RGBA32 guarantees R,G,B,A
+// byte order in memory.
 static SDL_Texture *rasterize(Font *f, FT_Bitmap *bm) {
     int w = (int)bm->width, h = (int)bm->rows;
     SDL_Surface *sf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
@@ -160,9 +161,9 @@ static SDL_Texture *rasterize(Font *f, FT_Bitmap *bm) {
         uint8_t *row = px + (size_t)y * (size_t)sf->pitch;
         uint8_t *src = bm->buffer + (size_t)y * (size_t)bm->pitch;
         for (int x = 0; x < w; x++) {
-            row[4 * x + 0] = f->color.r;
-            row[4 * x + 1] = f->color.g;
-            row[4 * x + 2] = f->color.b;
+            row[4 * x + 0] = 0xFF;
+            row[4 * x + 1] = 0xFF;
+            row[4 * x + 2] = 0xFF;
             row[4 * x + 3] = src[x];
         }
     }
@@ -171,6 +172,17 @@ static SDL_Texture *rasterize(Font *f, FT_Bitmap *bm) {
     if (tex)
         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
     return tex;
+}
+
+void font_draw_glyph(SDL_Renderer *ren, Font *f, const Glyph *g, float pen_x,
+                     float baseline_y, SDL_Color color) {
+    (void)f;
+    if (!g || !g->tex)
+        return;
+    SDL_SetTextureColorMod(g->tex, color.r, color.g, color.b);
+    SDL_FRect dst = {pen_x + (float)g->bx, baseline_y - (float)g->by,
+                     (float)g->w, (float)g->h};
+    SDL_RenderTexture(ren, g->tex, NULL, &dst);
 }
 
 const Glyph *font_get(Font *f, uint32_t cp) {

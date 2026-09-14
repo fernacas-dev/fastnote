@@ -12,11 +12,14 @@
 bool tb_init(TextBuffer *tb) {
     tb->data = malloc(TB_INIT_CAP);
     tb->lines = malloc(TB_INIT_LCAP * sizeof(size_t));
-    if (!tb->data || !tb->lines) {
+    tb->lstate = calloc(TB_INIT_LCAP, 1);
+    if (!tb->data || !tb->lines || !tb->lstate) {
         free(tb->data);
         free(tb->lines);
+        free(tb->lstate);
         tb->data = NULL;
         tb->lines = NULL;
+        tb->lstate = NULL;
         return false;
     }
     tb->len = 0;
@@ -30,8 +33,10 @@ bool tb_init(TextBuffer *tb) {
 void tb_free(TextBuffer *tb) {
     free(tb->data);
     free(tb->lines);
+    free(tb->lstate);
     tb->data = NULL;
     tb->lines = NULL;
+    tb->lstate = NULL;
     tb->len = tb->cap = tb->nlines = tb->lcap = 0;
 }
 
@@ -40,11 +45,18 @@ bool tb_clear(TextBuffer *tb) {
     tb->nlines = 1;
     if (tb->lcap == 0) {
         tb->lines = malloc(TB_INIT_LCAP * sizeof(size_t));
-        if (!tb->lines)
+        tb->lstate = calloc(TB_INIT_LCAP, 1);
+        if (!tb->lines || !tb->lstate) {
+            free(tb->lines);
+            free(tb->lstate);
+            tb->lines = NULL;
+            tb->lstate = NULL;
             return false;
+        }
         tb->lcap = TB_INIT_LCAP;
     }
     tb->lines[0] = 0;
+    tb->lstate[0] = 0; // fresh document starts outside any block construct
     return true;
 }
 
@@ -75,6 +87,19 @@ static bool tb_reserve_lines(TextBuffer *tb, size_t extra) {
     if (!nl)
         return false;
     tb->lines = nl;
+    // lstate grows in lockstep (new slots zeroed; stale values beyond the
+    // editor's hl_clean are recomputed on demand).
+    if (!tb->lstate) {
+        tb->lstate = calloc(ncap, 1);
+        if (!tb->lstate)
+            return false;
+    } else {
+        uint8_t *ns = realloc(tb->lstate, ncap);
+        if (!ns)
+            return false;
+        memset(ns + tb->lcap, 0, ncap - tb->lcap);
+        tb->lstate = ns;
+    }
     tb->lcap = ncap;
     return true;
 }
@@ -129,9 +154,13 @@ bool tb_insert(TextBuffer *tb, size_t pos, const char *s, size_t n) {
     size_t li = tb_line_of(tb, pos); // valid: index not yet updated below pos
     // Shift later line starts. Note tb_line_of was computed on the old
     // index which is still intact here (we only append so far).
-    if (tb->nlines > li + 1)
+    if (tb->nlines > li + 1) {
         memmove(tb->lines + li + 1 + nl, tb->lines + li + 1,
                 (tb->nlines - li - 1) * sizeof(size_t));
+        if (tb->lstate)
+            memmove(tb->lstate + li + 1 + nl, tb->lstate + li + 1,
+                    tb->nlines - li - 1);
+    }
     for (size_t i = li + 1; i < tb->nlines; i++)
         tb->lines[i + nl] += n;
     // Record new line starts in order.
@@ -157,6 +186,9 @@ void tb_erase(TextBuffer *tb, size_t pos, size_t n) {
         // Drop line starts strictly inside (pos, pos+n].
         memmove(tb->lines + l1 + 1, tb->lines + l2 + 1,
                 (tb->nlines - l2 - 1) * sizeof(size_t));
+        if (tb->lstate)
+            memmove(tb->lstate + l1 + 1, tb->lstate + l2 + 1,
+                    tb->nlines - l2 - 1);
         tb->nlines -= (l2 - l1);
     }
     for (size_t i = l1 + 1; i < tb->nlines; i++)

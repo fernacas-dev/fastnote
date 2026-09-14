@@ -9,6 +9,7 @@
 #include "editor.h"
 #include "file_dialog.h"
 #include "font.h"
+#include "project.h"
 #include "theme.h"
 #include "ui.h"
 
@@ -26,6 +27,7 @@ typedef struct App {
     Font font;
     Editor ed;
     Theme theme;
+    Project project;
     MenuState menu;
     ModalState modal;
     // HiDPI: layout is done in physical (framebuffer) pixels. base_font_px
@@ -47,6 +49,9 @@ typedef struct App {
     char pending_path[1024]; // file to open after confirm-save
     uint32_t dlg_event;
     int win_w, win_h; // framebuffer size in physical pixels
+    // Reusable scratch for per-line highlight kinds (grows to 64 KB max).
+    uint8_t *hl_scratch;
+    size_t hl_scratch_cap;
 } App;
 
 bool app_init(App *app, const char *open_path, const char *font_path, char *err,

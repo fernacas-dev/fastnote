@@ -1,10 +1,15 @@
+#define _POSIX_C_SOURCE 200809L // mkdir/rmdir with strict ISO C
+
 // Integration test: drives the real App event loop with synthetic SDL
 // events under the dummy video driver (ASan/UBSan instrumented).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "app.h"
+#include "project.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                            \
@@ -178,7 +183,11 @@ int main(void) {
     CHECK(app.ed.buf.nlines == 2);
 
     // Mouse click in the editor area positions the cursor (2nd line start).
-    push_click(10.0f, (float)(28 + app.font.line_h + 2));
+    // x must clear pad + line-number gutter (text starts at area_x).
+    float gx = (float)(app.m.pad_x) +
+               (float)ui_gutter_w(&app.font, &app.m, app.ed.buf.nlines) +
+               4.0f;
+    push_click(gx, (float)(28 + app.font.line_h + 2));
     steps(&app, 1);
     CHECK(app.ed.cursor == 6);
 
@@ -203,6 +212,85 @@ int main(void) {
     CHECK(sel && strcmp(sel, "\nhello\nworld") == 0);
     free(sel);
 
+    // Project sidebar: scan, click-to-open (with unsaved confirm), toggle.
+    {
+        // Bad root is rejected without state.
+        Project bad;
+        project_init(&bad);
+        CHECK(!project_open(&bad, "/nonexistent-fn-dir", NULL, 0));
+        CHECK(!bad.has);
+        project_quit(&bad);
+
+        mkdir("/tmp/fn_proj", 0755);
+        mkdir("/tmp/fn_proj/sub", 0755);
+        FILE *pf = fopen("/tmp/fn_proj/a.txt", "w");
+        CHECK(pf != NULL);
+        if (pf) {
+            fputs("AAA\n", pf);
+            fclose(pf);
+        }
+        pf = fopen("/tmp/fn_proj/sub/b.txt", "w");
+        CHECK(pf != NULL);
+        if (pf) {
+            fputs("BBB\n", pf);
+            fclose(pf);
+        }
+        char perr[256];
+        CHECK(project_open(&app.project, "/tmp/fn_proj", perr, sizeof(perr)));
+        CHECK(app.project.visible);
+        // Layout: depth-first, dirs first -> sub/, sub/b.txt, a.txt.
+        CHECK(app.project.n == 3);
+        CHECK(app.project.ents[0].is_dir);
+        CHECK(strcmp(app.project.ents[1].rel, "sub/b.txt") == 0);
+        CHECK(strcmp(app.project.ents[2].rel, "a.txt") == 0);
+        steps(&app, 2); // renders the sidebar without errors
+
+        int rh = project_row_h(&app.font, &app.m);
+        // Row 0 is the sub/ directory: clicking collapses/expands it.
+        float row0_y = (float)(app.m.menu_h + rh) + (float)rh / 2.0f;
+        push_click(100.0f, row0_y);
+        steps(&app, 1);
+        CHECK(app.project.n == 2);
+        CHECK(strcmp(app.project.ents[1].rel, "a.txt") == 0);
+        push_click(100.0f, row0_y);
+        steps(&app, 1);
+        CHECK(app.project.n == 3);
+        // Row i occupies [menu_h + rh*(i+1), menu_h + rh*(i+2)).
+        float row2_y =
+            (float)(app.m.menu_h + 3 * rh) + (float)rh / 2.0f;
+        // Doc is modified -> clicking a file asks for confirmation.
+        push_click(100.0f, row2_y);
+        steps(&app, 1);
+        CHECK(ui_modal_is_open(&app.modal));
+        push_key(SDLK_ESCAPE, 0);
+        steps(&app, 1);
+        CHECK(!ui_modal_is_open(&app.modal));
+        // Save, then the click opens the file directly.
+        CHECK(editor_save_as(&app.ed, "/tmp/fn_doc.txt", err, sizeof(err)));
+        push_click(100.0f, row2_y);
+        steps(&app, 1);
+        CHECK(app.ed.buf.len == 4);
+        CHECK(memcmp(app.ed.buf.data, "AAA\n", 4) == 0);
+        // Ctrl+B toggles the sidebar.
+        push_key(SDLK_B, SDL_KMOD_CTRL);
+        steps(&app, 1);
+        CHECK(!app.project.visible);
+        push_key(SDLK_B, SDL_KMOD_CTRL);
+        steps(&app, 1);
+        CHECK(app.project.visible);
+        remove("/tmp/fn_doc.txt");
+        remove("/tmp/fn_proj/sub/b.txt");
+        remove("/tmp/fn_proj/a.txt");
+        rmdir("/tmp/fn_proj/sub");
+        rmdir("/tmp/fn_proj");
+    }
+
+    // Highlight render path: a .c extension activates the C tokenizer.
+    CHECK(editor_save_as(&app.ed, "/tmp/fn_hl.c", err, sizeof(err)));
+    CHECK(app.ed.hl_lang == HLANG_C);
+    steps(&app, 2);
+    remove("/tmp/fn_hl.c");
+
     // Pathological single line stays renderable (bounded line walks).
     {
         size_t big = 200000;
@@ -213,8 +301,8 @@ int main(void) {
             CHECK(editor_insert(&app.ed, xs, big));
             free(xs);
             steps(&app, 2);
-            // Insert replaced the active selection: exactly big bytes.
-            CHECK(app.ed.buf.len == big);
+            // Appended at end of a.txt (no active selection to replace).
+            CHECK(app.ed.buf.len == 4 + big);
         }
     }
 

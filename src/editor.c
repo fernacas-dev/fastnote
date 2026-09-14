@@ -4,12 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "filetype.h"
+
 #define ED_UNDO_MAX_OPS 2000
 #define ED_UNDO_MAX_BYTES (8u * 1024u * 1024u)
 #define ED_COALESCE_MAX 512
 
 bool editor_init(Editor *e) {
     memset(e, 0, sizeof(*e));
+    e->hl_on = true;
     return tb_init(&e->buf);
 }
 
@@ -35,6 +38,8 @@ void editor_new(Editor *e) {
     e->path[0] = '\0';
     e->has_path = false;
     e->modified = false;
+    e->hl_lang = HLANG_NONE;
+    e->hl_clean = 0;
 }
 
 bool editor_load(Editor *e, const char *path, char *err, size_t errcap) {
@@ -48,6 +53,8 @@ bool editor_load(Editor *e, const char *path, char *err, size_t errcap) {
     snprintf(e->path, sizeof(e->path), "%s", path);
     e->has_path = true;
     e->modified = false;
+    e->hl_clean = 0; // block states recompute for the new content
+    e->hl_lang = hl_lang_for_name(filetype_of(path));
     return true;
 }
 
@@ -69,6 +76,9 @@ bool editor_save_as(Editor *e, const char *path, char *err, size_t errcap) {
     snprintf(e->path, sizeof(e->path), "%s", path);
     e->has_path = true;
     e->modified = false;
+    // A new extension may select a different tokenizer.
+    e->hl_lang = hl_lang_for_name(filetype_of(path));
+    e->hl_clean = 0;
     return true;
 }
 
@@ -189,11 +199,57 @@ static bool undo_coalesce_erase(Editor *e, size_t pos, const char *s, size_t n,
 bool editor_can_undo(const Editor *e) { return e->undo.pos > 0; }
 bool editor_can_redo(const Editor *e) { return e->undo.pos < e->undo.len; }
 
+// Earliest line touched by an edit starting at the cursor/selection.
+static size_t hl_edit_line(const Editor *e) {
+    size_t a = tb_line_of(&e->buf, e->cursor);
+    size_t b = tb_line_of(&e->buf, e->anchor);
+    return a < b ? a : b;
+}
+
+static void hl_invalidate(Editor *e, size_t line) {
+    if (line < e->hl_clean)
+        e->hl_clean = line;
+}
+
+bool editor_hl_update(Editor *e, HlLang lang, size_t need, int budget) {
+    if (lang == HLANG_NONE || e->buf.nlines == 0)
+        return true;
+    if (e->hl_clean >= e->buf.nlines)
+        e->hl_clean = e->buf.nlines - 1;
+    if (need >= e->buf.nlines)
+        need = e->buf.nlines - 1;
+    if (!e->buf.lstate)
+        return true; // allocation failed earlier: draw unhighlighted
+    size_t prev_clean = e->hl_clean;
+    while (e->hl_clean < need && budget > 0) {
+        size_t i = e->hl_clean;
+        if (i + 1 >= e->buf.nlines) {
+            e->hl_clean = e->buf.nlines - 1;
+            break;
+        }
+        size_t ls = tb_line_start(&e->buf, i);
+        uint8_t ns = hl_scan_line(lang, e->buf.data + ls,
+                                  tb_line_len(&e->buf, i),
+                                  e->buf.lstate[i], NULL, 0);
+        budget--;
+        if (ns == e->buf.lstate[i + 1] && i + 1 <= prev_clean) {
+            // Reached a previously valid region with identical state:
+            // everything downstream still matches.
+            e->hl_clean = e->buf.nlines - 1;
+            break;
+        }
+        e->buf.lstate[i + 1] = ns;
+        e->hl_clean = i + 1;
+    }
+    return e->hl_clean >= need;
+}
+
 bool editor_undo(Editor *e) {
     UndoStack *u = &e->undo;
     if (u->pos == 0)
         return false;
     UndoOp *op = &u->ops[u->pos - 1];
+    hl_invalidate(e, tb_line_of(&e->buf, op->pos));
     if (op->is_insert) {
         tb_erase(&e->buf, op->pos, op->len);
         e->cursor = op->pos;
@@ -215,6 +271,7 @@ bool editor_redo(Editor *e) {
     if (u->pos >= u->len)
         return false;
     UndoOp *op = &u->ops[u->pos];
+    hl_invalidate(e, tb_line_of(&e->buf, op->pos));
     if (op->is_insert) {
         if (!tb_insert(&e->buf, op->pos, op->text ? op->text : "", op->len))
             return false;
@@ -295,6 +352,7 @@ void editor_delete_selection(Editor *e) {
         editor_clear_selection(e);
         return;
     }
+    hl_invalidate(e, tb_line_of(&e->buf, a));
     // Copy first: tb_erase frees nothing but moves memory.
     char *tmp = malloc(b - a);
     bool ok = false;
@@ -334,6 +392,7 @@ static char *normalize_input(const char *s, size_t n, size_t *out_n) {
 bool editor_insert(Editor *e, const char *s, size_t n) {
     if (n == 0)
         return true;
+    hl_invalidate(e, hl_edit_line(e));
     size_t nn = 0;
     char *norm = normalize_input(s, n, &nn);
     if (!norm)
@@ -368,6 +427,7 @@ void editor_backspace(Editor *e) {
     }
     if (e->cursor == 0)
         return;
+    hl_invalidate(e, hl_edit_line(e));
     size_t prev = utf8_prev_start(e->buf.data, e->cursor);
     size_t n = e->cursor - prev;
     char tmp[4];
@@ -386,6 +446,7 @@ void editor_delete_fwd(Editor *e) {
     }
     if (e->cursor >= e->buf.len)
         return;
+    hl_invalidate(e, hl_edit_line(e));
     uint32_t cp;
     size_t k = utf8_decode(e->buf.data + e->cursor, e->buf.len - e->cursor, &cp);
     if (k == 0)

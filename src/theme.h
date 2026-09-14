@@ -12,6 +12,13 @@ typedef struct {
     SDL_Color menu;
     SDL_Color border;
     SDL_Color status_bar;
+    SDL_Color line_number; // gutter numbers (current line uses foreground)
+    SDL_Color hl_keyword;
+    SDL_Color hl_string;
+    SDL_Color hl_comment;
+    SDL_Color hl_number;
+    SDL_Color hl_preproc;
+    SDL_Color hl_tag;
 } Theme;
 
 static inline Theme theme_dark(void) {
@@ -23,6 +30,13 @@ static inline Theme theme_dark(void) {
         .menu       = {0x25, 0x25, 0x25, 0xFF},
         .border     = {0x30, 0x30, 0x30, 0xFF},
         .status_bar = {0x25, 0x25, 0x25, 0xFF},
+        .line_number = {0x85, 0x85, 0x85, 0xFF},
+        .hl_keyword = {0x56, 0x9C, 0xD6, 0xFF},
+        .hl_string = {0xCE, 0x91, 0x78, 0xFF},
+        .hl_comment = {0x6A, 0x99, 0x55, 0xFF},
+        .hl_number = {0xB5, 0xCE, 0xA8, 0xFF},
+        .hl_preproc = {0xC5, 0x86, 0xC0, 0xFF},
+        .hl_tag = {0x4E, 0xC9, 0xB0, 0xFF},
     };
 }
 

@@ -13,13 +13,15 @@
 // carries a heap-allocated FileDialogResult the receiver must free
 // (including the path string, if any).
 typedef struct {
-    char *path;   // NULL when the dialog was cancelled or failed
-    bool is_save; // true for save dialogs, false for open dialogs
+    char *path;    // NULL when the dialog was cancelled or failed
+    bool is_save;  // true for save dialogs
+    bool is_folder; // true for open-folder dialogs (path = directory)
 } FileDialogResult;
 
 // Registered SDL user-event type for results. 0 on failure.
 uint32_t filedialog_event_type(void);
 void filedialog_open(SDL_Window *win);
 void filedialog_save(SDL_Window *win);
+void filedialog_open_folder(SDL_Window *win);
 
 #endif

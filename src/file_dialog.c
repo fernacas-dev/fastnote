@@ -1,5 +1,6 @@
 #include "file_dialog.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +15,8 @@ uint32_t filedialog_event_type(void) {
     return dlg_event;
 }
 
+typedef enum { DLG_OPEN, DLG_SAVE, DLG_FOLDER } DlgKind;
+
 // Runs on whatever thread SDL delivers the dialog callback on; only uses
 // thread-safe SDL_PushEvent plus local allocations.
 static void SDLCALL dialog_callback(void *userdata, const char *const *filelist,
@@ -25,7 +28,9 @@ static void SDLCALL dialog_callback(void *userdata, const char *const *filelist,
     FileDialogResult *res = malloc(sizeof(*res));
     if (!res)
         return;
-    res->is_save = userdata != NULL;
+    DlgKind kind = (DlgKind)(uintptr_t)userdata;
+    res->is_save = kind == DLG_SAVE;
+    res->is_folder = kind == DLG_FOLDER;
     res->path = NULL;
     if (filelist && filelist[0]) {
         res->path = malloc(strlen(filelist[0]) + 1);
@@ -48,11 +53,16 @@ static const SDL_DialogFileFilter text_filters[] = {
 };
 
 void filedialog_open(SDL_Window *win) {
-    SDL_ShowOpenFileDialog(dialog_callback, NULL /* open */, win,
+    SDL_ShowOpenFileDialog(dialog_callback, (void *)(uintptr_t)DLG_OPEN, win,
                            text_filters, 2, NULL, false);
 }
 
 void filedialog_save(SDL_Window *win) {
-    SDL_ShowSaveFileDialog(dialog_callback, (void *)1 /* save */, win,
+    SDL_ShowSaveFileDialog(dialog_callback, (void *)(uintptr_t)DLG_SAVE, win,
                            text_filters, 2, NULL);
+}
+
+void filedialog_open_folder(SDL_Window *win) {
+    SDL_ShowOpenFolderDialog(dialog_callback, (void *)(uintptr_t)DLG_FOLDER,
+                             win, NULL, false);
 }

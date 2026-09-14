@@ -43,9 +43,16 @@ static size_t visible_lines(const App *app) {
     return v == 0 ? 1 : v;
 }
 
-static float editor_area_x(const App *app) { return (float)app->m.pad_x; }
+static float editor_area_x(App *app) {
+    float x = (float)app->m.pad_x;
+    if (app->project.has && app->project.visible)
+        x += (float)app->m.sidebar_w;
+    // Line-number gutter (cache lookups only; digits rarely change).
+    x += (float)ui_gutter_w(&app->font, &app->m, app->ed.buf.nlines);
+    return x;
+}
 
-static float editor_area_w(const App *app) {
+static float editor_area_w(App *app) {
     float w = (float)app->win_w - editor_area_x(app) -
               (float)app->m.pad_x / 2.0f;
     return w < 0 ? 0 : w;
@@ -166,6 +173,25 @@ static void refresh_scale(App *app) {
     reveal_cursor(app); // clamps scroll to the new metrics, marks dirty
 }
 
+// Open path with the unsaved-changes confirm when needed. Shared by the
+// open-file dialog and sidebar clicks.
+static void request_open_path(App *app, const char *path) {
+    if (app->ed.modified) {
+        snprintf(app->pending_path, sizeof(app->pending_path), "%s", path);
+        app->after = AFTER_OPEN;
+        ui_modal_confirm(&app->modal, "This document");
+    } else {
+        char err[256];
+        if (!editor_load(&app->ed, path, err, sizeof(err))) {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
+            ui_modal_error(&app->modal, msg);
+        }
+        update_title(app);
+        reveal_cursor(app);
+    }
+}
+
 // --- File actions ---
 
 static void run_after(App *app) {
@@ -197,6 +223,8 @@ static void do_save(App *app) {
         } else if (app->after != AFTER_NONE) {
             run_after(app);
         }
+        if (app->project.has)
+            project_rescan(&app->project); // a save may add files
         update_title(app);
         app_mark_dirty(app);
     } else {
@@ -253,6 +281,12 @@ static void do_action(App *app, MenuAction a) {
         break;
     case ACT_OPEN:
         request_open_dialog(app);
+        break;
+    case ACT_OPEN_FOLDER:
+        if (!app->dialog_open) {
+            filedialog_open_folder(app->win);
+            app->dialog_open = true;
+        }
         break;
     case ACT_SAVE:
         do_save(app);
@@ -312,6 +346,16 @@ static void do_action(App *app, MenuAction a) {
         editor_select_all(&app->ed);
         reveal_cursor(app);
         break;
+    case ACT_TOGGLE_SIDEBAR:
+        if (app->project.has) {
+            project_set_visible(&app->project, !app->project.visible);
+            reveal_cursor(app); // re-clamp to the new editor area
+        }
+        break;
+    case ACT_TOGGLE_HL:
+        app->ed.hl_on = !app->ed.hl_on;
+        app_mark_dirty(app);
+        break;
     case ACT_FONT_INC:
     case ACT_FONT_DEC:
     case ACT_FONT_RESET: {
@@ -361,7 +405,16 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
     app->dialog_open = false;
     if (!res)
         return;
-    if (res->is_save) {
+    if (res->is_folder) {
+        if (res->path) {
+            char err[256];
+            if (!project_open(&app->project, res->path, err, sizeof(err))) {
+                char msg[512];
+                snprintf(msg, sizeof(msg), "Could not open folder:\n%s", err);
+                ui_modal_error(&app->modal, msg);
+            }
+        }
+    } else if (res->is_save) {
         if (res->path) {
             char err[256];
             if (!editor_save_as(&app->ed, res->path, err, sizeof(err))) {
@@ -378,6 +431,8 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
                 else
                     app->after = AFTER_NONE;
             }
+            if (app->project.has)
+                project_rescan(&app->project); // a save may add files
             update_title(app);
             reveal_cursor(app);
         } else {
@@ -385,21 +440,7 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
             app->after = AFTER_NONE;
         }
     } else if (res->path) {
-        if (app->ed.modified) {
-            snprintf(app->pending_path, sizeof(app->pending_path), "%s",
-                     res->path);
-            app->after = AFTER_OPEN;
-            ui_modal_confirm(&app->modal, "This document");
-        } else {
-            char err[256];
-            if (!editor_load(&app->ed, res->path, err, sizeof(err))) {
-                char msg[512];
-                snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
-                ui_modal_error(&app->modal, msg);
-            }
-            update_title(app);
-            reveal_cursor(app);
-        }
+        request_open_path(app, res->path);
     }
     free(res->path);
     free(res);
@@ -447,6 +488,7 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         case SDLK_C: a = ACT_COPY; break;
         case SDLK_X: a = ACT_CUT; break;
         case SDLK_V: a = ACT_PASTE; break;
+        case SDLK_B: a = ACT_TOGGLE_SIDEBAR; break;
         case SDLK_PLUS:
         case SDLK_EQUALS:
         case SDLK_KP_PLUS: a = ACT_FONT_INC; break;
@@ -562,6 +604,24 @@ static void on_mouse_down(App *app, const SDL_MouseButtonEvent *b) {
         return;
     }
     ui_menu_close(&app->menu);
+    // Sidebar file clicks (framebuffer coordinates).
+    if (app->project.has && app->project.visible &&
+        x < (float)app->m.sidebar_w) {
+        const char *rel = NULL;
+        ProjClick pc = project_click(&app->project, &app->font, &app->m, x,
+                                     y, app->m.menu_h,
+                                     app->win_h - app->m.status_h, &rel);
+        if (pc == PCK_FILE && rel) {
+            char full[2048];
+            snprintf(full, sizeof(full), "%s/%s", app->project.root, rel);
+            request_open_path(app, full);
+        }
+        app_mark_dirty(app);
+        return;
+    }
+    // Clicks on the line-number gutter are ignored.
+    if (x < editor_area_x(app))
+        return;
     size_t at = offset_at_point(app, x, y);
     editor_set_cursor(&app->ed, at, false);
     app->dragging = true;
@@ -587,6 +647,15 @@ static void on_mouse_motion(App *app, const SDL_MouseMotionEvent *mo) {
 static void on_wheel(App *app, const SDL_MouseWheelEvent *w) {
     if (ui_modal_is_open(&app->modal))
         return;
+    // Wheel over the sidebar scrolls the project, not the document.
+    if (app->project.has && app->project.visible &&
+        fb_x(app, w->mouse_x) < (float)app->m.sidebar_w) {
+        int rows = project_visible_rows(&app->font, &app->m, app->m.menu_h,
+                                        app->win_h - app->m.status_h);
+        project_scroll(&app->project, -(long)(w->y * FN_WHEEL_LINES), rows);
+        app_mark_dirty(app);
+        return;
+    }
     if ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
         app->ed.scroll_x -= (int)(w->y * 40.0f * app->display_scale);
         editor_clamp_scroll(&app->ed, visible_lines(app));
@@ -671,6 +740,7 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
         SDL_Quit();
         return false;
     }
+    project_init(&app->project);
     if (open_path) {
         char lerr[256];
         if (!editor_load(&app->ed, open_path, lerr, sizeof(lerr))) {
@@ -691,6 +761,10 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
 
 void app_quit(App *app) {
     SDL_StopTextInput(app->win);
+    free(app->hl_scratch);
+    app->hl_scratch = NULL;
+    app->hl_scratch_cap = 0;
+    project_quit(&app->project);
     editor_quit(&app->ed);
     font_quit(&app->font);
     if (app->ren)
@@ -723,6 +797,12 @@ void app_step(App *app, int timeout_ms) {
                 break;
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
                 refresh_scale(app);
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                // Pick up external file changes while we were away.
+                if (app->project.has)
+                    project_rescan(&app->project);
+                app_mark_dirty(app);
                 break;
             case SDL_EVENT_KEY_DOWN:
                 on_key_down(app, &ev.key);
@@ -773,8 +853,9 @@ void app_step(App *app, int timeout_ms) {
     }
     if (app->dirty) {
         update_title(app);
-        render_frame(app);
-        app->dirty = false;
+        // A false return means highlight states are still catching up:
+        // keep rendering until resolved.
+        app->dirty = !render_frame(app);
     }
 }
 

@@ -2,7 +2,7 @@
 
 FastNote is an extremely lightweight graphical text editor for Linux,
 written in C17 with SDL3 (window, input, clipboard, rendering) and
-FreeType (glyph rasterization). No GTK/Qt, no syntax highlighting, no tabs,
+FreeType (glyph rasterization). No GTK/Qt, no tabs,
 no plugins — just fast text editing.
 
 ## Dependencies
@@ -67,6 +67,7 @@ fastnote [options] [file]
 | Page up / down | PageUp / PageDown |
 | Extend selection | Shift + any navigation key |
 | Font bigger / smaller / reset | Ctrl++ / Ctrl+- / Ctrl+0 |
+| Toggle project sidebar | Ctrl+B |
 | Close menu / clear selection | Esc |
 
 Text entry goes through SDL text-input events, so UTF-8, layouts and
@@ -85,6 +86,9 @@ src/
   render.c       visible-lines-only frame renderer
   ui.[hc]        menu bar + dropdowns, modal dialogs, status bar
   file_dialog.[hc] isolation layer over SDL3 async file dialogs
+  project.[hc]   project sidebar: folder scan, file list, open-on-click
+  filetype.[hc]  language identification by file name (status bar)
+  highlight.[hc] hand-rolled syntax highlighter (no dependencies)
   theme.h        centralized dark palette + layout constants
 tests/
   test_main.c    unit tests (text buffer, UTF-8, editor, undo)
@@ -128,6 +132,40 @@ bounded measurement paths (see above).
   `SDL_ShowSaveFileDialog`), isolated behind `file_dialog.h` so the backend
   can be swapped without touching the rest of the app.
 - Horizontal scrolling exists (Shift+wheel, cursor follow) but is minimal.
+- Line numbers: the gutter shows right-aligned numbers for visible lines
+  only (current line in foreground, rest dimmed); clicks on it are ignored.
+- Language label: the status bar shows the detected language (`filetype.h`,
+  by extension + known basenames like Makefile/Dockerfile, unknown →
+  "Plain Text").
+
+## Project sidebar
+
+`File → Open Folder` (native folder dialog) loads a project: a 220 px
+sidebar shows a tree (directories first, alphabetical, depth-indented,
+folders with a `/` suffix and ▶/▼ triangles). Clicking a folder
+collapses/expands its contents; clicking a file opens it — with the usual
+Save/Discard/Cancel when the current document has unsaved changes. The
+open file is highlighted; the wheel scrolls the tree when hovering it;
+`View → Toggle Sidebar` (Ctrl+B) hides/shows it. The tree rescans on
+folder open, window focus and successful save (collapses persist by path).
+Hidden files, symlinks and unreadable subdirectories are skipped; caps of
+20 000 entries, 1024 collapses and 64 depth keep stray mounts from
+stalling the UI.
+
+## Syntax highlighting
+
+Minimal and dependency-free (`highlight.h/c`): hand-rolled per-line
+tokenizers for C, C++, Java, JavaScript/TypeScript, Python, Ruby, Shell
+and HTML/XML — keywords, comments, strings, numbers, preprocessor lines
+and tags, in 6 theme colors. Only visible lines tokenize per frame, so
+typing stays instant; multi-line constructs (`/* */`, Python triple
+quotes, `<!-- -->`) thread one state byte across lines with per-line
+states maintained parallel to the line index. Edits invalidate from the
+edited line and recompute forward with a per-frame budget (3000 lines),
+stopping early once the state rejoins a previously valid region — typical
+keystrokes re-resolve in ~1 line, huge files converge progressively
+without jank. Other languages and files over the 64 KB per-line kinds cap
+render as plain text. `View → Toggle Highlight` disables it.
 
 ## HiDPI / display scaling
 

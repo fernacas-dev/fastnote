@@ -26,7 +26,6 @@ typedef struct {
     void *ft;   // FT_Library (void* to keep this header FreeType-free)
     void *face; // FT_Face
     SDL_Renderer *renderer;
-    SDL_Color color; // glyphs are rasterized pre-colored; cache clears on change
     char path[1024];
     int px;
     int line_h; // distance between baselines
@@ -41,6 +40,10 @@ void font_quit(Font *f);
 bool font_set_size(Font *f, int px);
 // Get (and rasterize on miss) the glyph for cp. Returns NULL only on OOM.
 const Glyph *font_get(Font *f, uint32_t cp);
+// Draw one glyph with an exact color. Glyphs rasterize white; the color
+// comes from the texture color mod, so any theme color stays exact.
+void font_draw_glyph(SDL_Renderer *ren, Font *f, const Glyph *g, float pen_x,
+                     float baseline_y, SDL_Color color);
 // Sum of advances for n bytes of UTF-8 text; tab_w is the tab stop in pixels.
 int font_text_width(Font *f, const char *s, size_t n, int tab_w);
 // Bounded variant: stops once the width exceeds max_x (returns > max_x).

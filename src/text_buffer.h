@@ -19,6 +19,12 @@ typedef struct {
     size_t *lines;
     size_t nlines;
     size_t lcap;
+    // Per-line highlight block state (one byte per line, lcap slots),
+    // maintained parallel to lines[] so multi-line constructs (/* */,
+    // triple-quoted strings) highlight correctly. See highlight.h.
+    // Validity is tracked by the editor (hl_clean); slots beyond it may
+    // hold stale values and are recomputed on demand.
+    uint8_t *lstate;
 } TextBuffer;
 
 bool tb_init(TextBuffer *tb);
