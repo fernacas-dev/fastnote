@@ -467,6 +467,10 @@ static void do_action(App *app, MenuAction a) {
     case ACT_RECENT_FOLDER:
         open_recents_picker(app, true);
         break;
+    case ACT_ABOUT:
+        ui_modal_about(&app->modal);
+        app_mark_dirty(app);
+        break;
     case ACT_CLOSE_TAB:
         request_close_tab(app, app->cur);
         break;
@@ -675,6 +679,11 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
     if (menu_was_open) {
         // Menus are mouse-driven; any other key dismisses and goes through.
         ui_menu_close(&app->menu);
+    }
+    if (key == SDLK_F1 && !ctrl) {
+        do_action(app, ACT_ABOUT);
+        app_mark_dirty(app);
+        return;
     }
 
     // Ctrl shortcuts.

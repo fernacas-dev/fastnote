@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "text_buffer.h" // utf8_decode
+#include "version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -59,12 +60,15 @@ static const MenuItem view_items[] = {
     {"Toggle Sidebar", "Ctrl+B", ACT_TOGGLE_SIDEBAR},
     {"Toggle Highlight", "", ACT_TOGGLE_HL},
 };
+static const MenuItem help_items[] = {
+    {"About FastNote", "F1", ACT_ABOUT},
+};
 
-int ui_menu_count(void) { return 3; }
+int ui_menu_count(void) { return 4; }
 
 const char *ui_menu_title(int m) {
-    static const char *titles[] = {"File", "Edit", "View"};
-    if (m < 0 || m > 2)
+    static const char *titles[] = {"File", "Edit", "View", "Help"};
+    if (m < 0 || m > 3)
         return "";
     return titles[m];
 }
@@ -77,9 +81,12 @@ int ui_menu_items(int m, const MenuItem **out) {
     case 1:
         *out = edit_items;
         return (int)(sizeof(edit_items) / sizeof(edit_items[0]));
-    default:
+    case 2:
         *out = view_items;
         return (int)(sizeof(view_items) / sizeof(view_items[0]));
+    default:
+        *out = help_items;
+        return (int)(sizeof(help_items) / sizeof(help_items[0]));
     }
 }
 
@@ -283,6 +290,21 @@ void ui_modal_error(ModalState *m, const char *msg) {
     m->kind = MODAL_ERROR;
     snprintf(m->title, sizeof(m->title), "Error");
     snprintf(m->msg, sizeof(m->msg), "%s", msg);
+    m->nbtn = 1;
+    m->btn_id[0] = MB_OK;
+    m->btn_label[0] = "OK";
+}
+
+void ui_modal_about(ModalState *m) {
+    // Same OK-button dismissal as errors; only the content differs.
+    m->kind = MODAL_ERROR;
+    snprintf(m->title, sizeof(m->title), "About FastNote");
+    snprintf(m->msg, sizeof(m->msg),
+             "FastNote " FASTNOTE_VERSION "\n"
+             "\n"
+             "A minimal, fast text editor for Linux.\n"
+             "\n"
+             "Built with C17, SDL3 and FreeType.");
     m->nbtn = 1;
     m->btn_id[0] = MB_OK;
     m->btn_label[0] = "OK";

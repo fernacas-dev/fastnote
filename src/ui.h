@@ -33,6 +33,7 @@ typedef enum {
     ACT_TAB_PREV,
     ACT_RECENT_FILE,
     ACT_RECENT_FOLDER,
+    ACT_ABOUT,
 } MenuAction;
 
 typedef struct {
@@ -128,6 +129,8 @@ typedef struct {
 
 void ui_modal_confirm(ModalState *m, const char *what);
 void ui_modal_error(ModalState *m, const char *msg);
+// About box (an OK dialog with the application info).
+void ui_modal_about(ModalState *m);
 // Recent picker: title + up to PICK_MAX absolute paths. Selection starts
 // at row 0; folders=true opens folders, false opens files.
 void ui_modal_picker(ModalState *m, const char *title,

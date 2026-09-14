@@ -1,0 +1,6 @@
+#ifndef FASTNOTE_VERSION_H
+#define FASTNOTE_VERSION_H
+
+#define FASTNOTE_VERSION "1.0.0"
+
+#endif

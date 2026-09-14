@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "version.h"
 
 static void usage(const char *prog) {
     printf("Usage: %s [options] [file]\n", prog);
@@ -21,7 +22,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (strcmp(argv[i], "--version") == 0) {
-            printf("FastNote 1.0.0\n");
+            printf("FastNote " FASTNOTE_VERSION "\n");
             return 0;
         }
         if (strcmp(argv[i], "--font") == 0 && i + 1 < argc) {

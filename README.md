@@ -65,6 +65,7 @@ fastnote [options] [file]
 | New tab / Close tab | Ctrl+N / Ctrl+W |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Open recent file | Ctrl+R |
+| About FastNote | F1 |
 | Word jump | Ctrl+Left / Ctrl+Right |
 | Doc start / end | Ctrl+Home / Ctrl+End |
 | Page up / down | PageUp / PageDown |

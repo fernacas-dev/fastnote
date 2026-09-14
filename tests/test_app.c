@@ -385,6 +385,15 @@ int main(void) {
     steps(&app, 1);
     CHECK(app.tabs[app.cur].scroll_line == 0);
 
+    // About box via F1: info modal, dismissed with Escape.
+    push_key(SDLK_F1, 0);
+    steps(&app, 1);
+    CHECK(ui_modal_is_open(&app.modal));
+    CHECK(strcmp(app.modal.title, "About FastNote") == 0);
+    push_key(SDLK_ESCAPE, 0);
+    steps(&app, 1);
+    CHECK(!ui_modal_is_open(&app.modal));
+
     // Save every remaining tab, then quit cleanly via the window path.
     for (size_t t = 0; t < app.ntabs; t++) {
         char tmp[64];
