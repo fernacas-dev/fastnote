@@ -52,6 +52,8 @@ typedef struct App {
     bool blink_on;   // cursor currently visible phase
     uint64_t last_blink;
     bool dragging;   // mouse drag selection in progress
+    bool sb_drag;    // scrollbar thumb drag in progress
+    float sb_grab;   // grab offset inside the thumb (px, framebuffer)
     bool dialog_open; // native file dialog outstanding
     AfterAction after;
     char pending_path[1024]; // file to open after confirm-save

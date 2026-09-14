@@ -44,6 +44,7 @@ static inline Theme theme_dark(void) {
 // display scale for HiDPI displays (see ui.h).
 #define FN_MENU_H 28
 #define FN_TAB_H 30
+#define FN_SCROLLBAR_W 12
 #define FN_STATUS_H 24
 #define FN_PAD_X 8
 #define FN_CURSOR_W 2

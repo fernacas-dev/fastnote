@@ -182,10 +182,14 @@ static bool scan_dir(Project *p, const char *rel, int depth) {
             if (strlen(rel) + 1 + strlen(kids[i].name) >= 2048)
                 continue; // absurdly deep path: skip, keep the rest
             char crel[2048];
-            if (rel[0])
-                snprintf(crel, sizeof(crel), "%s/%s", rel, kids[i].name);
-            else
-                snprintf(crel, sizeof(crel), "%s", kids[i].name);
+            size_t rl = strlen(rel), kl = strlen(kids[i].name);
+            if (rl == 0)
+                memcpy(crel, kids[i].name, kl + 1);
+            else {
+                memcpy(crel, rel, rl);
+                crel[rl] = '/';
+                memcpy(crel + rl + 1, kids[i].name, kl + 1);
+            }
             bool collapsed = kids[i].is_dir && is_collapsed(p, crel);
             if (!entries_add(p, crel, kids[i].is_dir, !collapsed, depth))
                 ok = false;
@@ -331,10 +335,10 @@ void project_draw(SDL_Renderer *ren, Font *f, const Theme *th,
 
     // Header: folder name + entry count.
     char head[160];
-    snprintf(head, sizeof(head), "%s (%zu)", root_basename(p), p->n);
+    snprintf(head, sizeof(head), "%.120s (%zu)", root_basename(p), p->n);
     float hbase = (float)top + (float)rh / 2.0f + (float)f->asc -
                   (float)f->line_h / 2.0f;
-    ui_draw_text(ren, f, head, strlen(head), text_x, hbase, th->foreground);
+    ui_draw_text(ren, f, head, strlen(head), text_x, hbase, GCOL_FG);
     float hy = (float)top + (float)rh;
     SDL_SetRenderDrawColor(ren, th->border.r, th->border.g, th->border.b,
                            0xFF);
@@ -375,13 +379,13 @@ void project_draw(SDL_Renderer *ren, Font *f, const Theme *th,
         else
             snprintf(label, sizeof(label), "%s", e->name);
         float lb = mid_y + (float)f->asc - (float)f->line_h / 2.0f;
-        ui_draw_text(ren, f, label, strlen(label), lx, lb, th->foreground);
+        ui_draw_text(ren, f, label, strlen(label), lx, lb, GCOL_FG);
     }
     if (p->n == 0) {
         const char *empty = "(empty)";
         float lb = (float)(top + rh) + (float)rh / 2.0f + (float)f->asc -
                    (float)f->line_h / 2.0f;
-        ui_draw_text(ren, f, empty, strlen(empty), text_x, lb, th->foreground);
+        ui_draw_text(ren, f, empty, strlen(empty), text_x, lb, GCOL_FG);
     }
 }
 

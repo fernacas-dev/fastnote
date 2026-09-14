@@ -59,10 +59,10 @@ fastnote [options] [file]
 
 | Action | Shortcut |
 |---|---|
-| New / Open / Save / Save As / Exit | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+Q |
+| New tab / Open / Save / Save As / Exit | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+Q |
 | Undo / Redo | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y |
 | Cut / Copy / Paste / Select All | Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A |
-| New tab / Close tab | Ctrl+N / Ctrl+W |
+| Close tab | Ctrl+W |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Open recent file | Ctrl+R |
 | About FastNote | F1 |
@@ -77,6 +77,14 @@ fastnote [options] [file]
 Text entry goes through SDL text-input events, so UTF-8, layouts and
 accented keys work. Window title shows `*` for modified documents; New,
 Open and Exit ask Save/Discard/Cancel when unsaved changes exist.
+
+### Mouse
+
+Click positions the cursor, drag selects, wheel scrolls (`Shift`+wheel
+scrolls horizontally). A scrollbar appears on the right whenever the
+document overflows: click the track to page, drag the thumb to scroll.
+Clicks on menus, tabs, the sidebar and the gutter do what you'd expect;
+gutter clicks are ignored.
 
 ## Tabs
 
@@ -127,8 +135,32 @@ Performance decisions (all documented at the use site):
 - Files are normalized on load (CRLF→LF, invalid UTF-8→U+FFFD, BOM
   stripped) so malformed input can never crash the editor.
 
-## Performance test plan
+## Performance notes (measured, i5-10300H, software renderer)
 
+| Metric | Value |
+|---|---|
+| Startup (window + font + first frame) | ~4–6 ms |
+| Frame, empty doc | ~0.25 ms |
+| Frame, 10 MB doc with highlight | ~0.65 ms |
+| Typing latency mid-10 MB file | ~1 ms/key |
+| 10 MB load (read + sanitize + index) | ~95 ms |
+| Tokenizer throughput | ~128 MB/s |
+| 100 MB file steady RSS | ~1.2× file size |
+
+How it stays fast:
+
+- Release build by default (`CMAKE_BUILD_TYPE`, override with `-D...=Debug`).
+- Adaptive glyph raster backend selected from the renderer name: tight
+  per-glyph textures on software renderers (measured 0.24 vs 1.4 µs/glyph
+  against atlas subrects — CPU cache locality), one shared shelf-packed
+  atlas on GPU renderers (no texture switches, auto-batching friendly).
+- Glyphs bake their color (8-entry palette), so drawing needs zero
+  per-glyph state changes — this alone cut frame time 1.5×.
+- Only visible lines render/measure/tokenize; long-line work is
+  viewport-bounded; highlight states recompute with a 3000-line/frame
+  budget; undo is bounded and typing coalesces.
+
+## Performance test plan
 `scripts/perf_test.sh` automates this. Tiers:
 
 | Tier | Size | Checks |

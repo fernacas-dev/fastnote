@@ -64,6 +64,27 @@ static void push_motion(float x, float y) {
     CHECK(SDL_PushEvent(&ev));
 }
 
+static void push_down(float x, float y) {
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+    ev.button.button = SDL_BUTTON_LEFT;
+    ev.button.x = x;
+    ev.button.y = y;
+    ev.button.clicks = 1;
+    CHECK(SDL_PushEvent(&ev));
+}
+
+static void push_up(float x, float y) {
+    SDL_Event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SDL_EVENT_MOUSE_BUTTON_UP;
+    ev.button.button = SDL_BUTTON_LEFT;
+    ev.button.x = x;
+    ev.button.y = y;
+    CHECK(SDL_PushEvent(&ev));
+}
+
 static void push_quit(void) {
     SDL_Event ev;
     memset(&ev, 0, sizeof(ev));
@@ -384,6 +405,49 @@ int main(void) {
     CHECK(SDL_PushEvent(&wev));
     steps(&app, 1);
     CHECK(app.tabs[app.cur].scroll_line == 0);
+
+    // Scrollbar: 100-line doc shows a track; track click pages, thumb
+    // drag scrolls proportionally. Restored afterwards with two undos
+    // (coalesced inserts = 1 op, then the delete that cleared the doc).
+    size_t sb_len = app.tabs[app.cur].buf.len;
+    editor_select_all(&app.tabs[app.cur]);
+    editor_delete_selection(&app.tabs[app.cur]);
+    for (int i = 0; i < 100; i++)
+        CHECK(editor_insert(&app.tabs[app.cur], "ln\n", 3));
+    CHECK(app.tabs[app.cur].buf.nlines == 101);
+    int sb_top = app.m.menu_h + app.m.tab_h;
+    int sb_h = app.win_h - sb_top - app.m.status_h;
+    size_t sb_vis = (size_t)(sb_h / app.font.line_h);
+    size_t sb_max = 101 - sb_vis;
+    steps(&app, 2); // renders the scrollbar without errors
+    float sb_tx = (float)app.win_w - (float)app.m.scrollbar_w / 2.0f;
+    push_click(sb_tx, (float)(sb_top + sb_h - 4));
+    steps(&app, 1);
+    CHECK(app.tabs[app.cur].scroll_line == sb_vis); // one page down
+    SDL_FRect track, thumb;
+    CHECK(ui_scrollbar_geom(&app.m, 101, sb_vis,
+                            app.tabs[app.cur].scroll_line, sb_top, sb_h,
+                            app.win_w, &track, &thumb));
+    CHECK(thumb.h > 0 && thumb.y >= (float)sb_top);
+    float grab_y = thumb.y + thumb.h / 2.0f;
+    push_down(track.x + 2.0f, grab_y);
+    steps(&app, 1);
+    CHECK(app.sb_drag);
+    push_motion(track.x + 2.0f, grab_y + 80.0f);
+    steps(&app, 1);
+    {
+        // Proportional drag: scroll must grow (exact float parity with
+        // the app math isn't asserted, only direction and bounds).
+        size_t after = app.tabs[app.cur].scroll_line;
+        CHECK(after > sb_vis && after <= sb_max);
+    }
+    push_up(track.x + 2.0f, grab_y + 80.0f);
+    steps(&app, 1);
+    CHECK(!app.sb_drag);
+    CHECK(editor_undo(&app.tabs[app.cur]));
+    CHECK(app.tabs[app.cur].buf.len == 0);
+    CHECK(editor_undo(&app.tabs[app.cur]));
+    CHECK(app.tabs[app.cur].buf.len == sb_len); // doc fully restored
 
     // About box via F1: info modal, dismissed with Escape.
     push_key(SDLK_F1, 0);

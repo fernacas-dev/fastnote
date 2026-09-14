@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(FastNote VERSION 1.0.0 LANGUAGES C)
 
+# Optimized by default: an -O0 text editor defeats the project's purpose.
+# Override with -DCMAKE_BUILD_TYPE=Debug for development.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)

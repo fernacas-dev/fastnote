@@ -19,6 +19,7 @@ UiMetrics ui_metrics_for(float scale) {
     m.pad_x = (int)(FN_PAD_X * scale + 0.5f);
     m.cursor_w = (int)(FN_CURSOR_W * scale + 0.5f);
     m.sidebar_w = (int)(220.0f * scale + 0.5f);
+    m.scrollbar_w = (int)(FN_SCROLLBAR_W * scale + 0.5f);
     if (m.menu_h < 1)
         m.menu_h = 1;
     if (m.tab_h < 1)
@@ -31,6 +32,8 @@ UiMetrics ui_metrics_for(float scale) {
         m.cursor_w = 1;
     if (m.sidebar_w < 1)
         m.sidebar_w = 1;
+    if (m.scrollbar_w < 1)
+        m.scrollbar_w = 1;
     return m;
 }
 
@@ -93,7 +96,7 @@ int ui_menu_items(int m, const MenuItem **out) {
 // --- Text helpers ---
 
 float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
-                   float x, float baseline_y, SDL_Color color) {
+                   float x, float baseline_y, uint8_t color) {
     float pen = x;
     size_t i = 0;
     while (i < n) {
@@ -101,9 +104,9 @@ float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
         size_t k = utf8_decode(s + i, n - i, &cp);
         if (k == 0)
             break;
-        const Glyph *g = font_get(f, cp);
+        const Glyph *g = font_get(f, cp, color);
         if (g) {
-            font_draw_glyph(ren, f, g, pen, baseline_y, color);
+            font_draw_glyph(ren, f, g, pen, baseline_y);
             pen += (float)g->adv;
         }
         i += k;
@@ -119,7 +122,7 @@ float ui_text_width(Font *f, const char *s, size_t n) {
         size_t k = utf8_decode(s + i, n - i, &cp);
         if (k == 0)
             break;
-        const Glyph *g = font_get(f, cp);
+        const Glyph *g = font_get(f, cp, GCOL_FG);
         if (g)
             w += (float)g->adv;
         i += k;
@@ -132,7 +135,7 @@ int ui_gutter_w(Font *f, const UiMetrics *m, size_t total_lines) {
     int digits = 1;
     for (size_t t = total_lines; t >= 10; t /= 10)
         digits++;
-    const Glyph *zero = font_get(f, (uint32_t)'0');
+    const Glyph *zero = font_get(f, (uint32_t)'0', GCOL_FG);
     int adv = (zero && zero->adv > 0) ? zero->adv : f->px / 2;
     if (adv < 1)
         adv = 1;
@@ -270,6 +273,39 @@ void ui_menu_motion(MenuState *st, Font *f, const UiMetrics *m, float x,
     st->hover_item = item_at(st, f, m, x, y, win_w);
 }
 
+// --- Scrollbar ---
+
+bool ui_scrollbar_geom(const UiMetrics *m, size_t nlines, size_t visible,
+                       size_t scroll, int area_top, int area_h, int win_w,
+                       SDL_FRect *track, SDL_FRect *thumb) {
+    if (!ui_has_scrollbar(nlines, visible) || area_h <= 0)
+        return false;
+    float sw = (float)m->scrollbar_w;
+    track->x = (float)win_w - sw;
+    track->y = (float)area_top;
+    track->w = sw;
+    track->h = (float)area_h;
+    size_t max_scroll = nlines - visible;
+    float min_h = 20.0f * m->scale;
+    float th = track->h * (float)visible / (float)nlines;
+    if (th < min_h)
+        th = min_h;
+    if (th > track->h)
+        th = track->h;
+    float ty = (float)area_top;
+    if (max_scroll > 0) {
+        size_t s = scroll > max_scroll ? max_scroll : scroll;
+        ty += (track->h - th) * (float)s / (float)max_scroll;
+    }
+    thumb->x = track->x;
+    thumb->y = ty;
+    thumb->w = sw;
+    thumb->h = th;
+    return true;
+}
+
+// --- Modal ---
+
 // --- Modal ---
 
 void ui_modal_confirm(ModalState *m, const char *what) {
@@ -391,14 +427,14 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
             fill_rect(ren, th->selection, &hl);
         }
         const char *t = ui_menu_title(i);
-        ui_draw_text(ren, f, t, strlen(t), tx + (float)m->pad_x, baseline, th->foreground);
+        ui_draw_text(ren, f, t, strlen(t), tx + (float)m->pad_x, baseline, GCOL_FG);
     }
     // Font-size indicator, right aligned (user-facing, unscaled size).
     char sizebuf[32];
     snprintf(sizebuf, sizeof(sizebuf), "%d px", font_px);
     float sw = ui_text_width(f, sizebuf, strlen(sizebuf));
     ui_draw_text(ren, f, sizebuf, strlen(sizebuf),
-                 (float)win_w - sw - (float)m->pad_x, baseline, th->foreground);
+                 (float)win_w - sw - (float)m->pad_x, baseline, GCOL_FG);
 
     // Dropdown.
     SDL_FRect dd;
@@ -419,11 +455,11 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                 fill_rect(ren, th->selection, &hl);
             }
             ui_draw_text(ren, f, items[i].label, strlen(items[i].label),
-                         dd.x + SC(m, 14), ib + ih * (float)i, th->foreground);
+                         dd.x + SC(m, 14), ib + ih * (float)i, GCOL_FG);
             float scw = ui_text_width(f, items[i].shortcut,
                                       strlen(items[i].shortcut));
             ui_draw_text(ren, f, items[i].shortcut, strlen(items[i].shortcut),
-                         dd.x + dd.w - scw - SC(m, 14), ib + ih * (float)i, th->foreground);
+                         dd.x + dd.w - scw - SC(m, 14), ib + ih * (float)i, GCOL_FG);
         }
     }
 
@@ -439,7 +475,7 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
                   ((float)m->status_h - (float)f->line_h) / 2.0f;
     char lc[64];
     snprintf(lc, sizeof(lc), "Ln %zu, Col %zu", line, col);
-    ui_draw_text(ren, f, lc, strlen(lc), (float)m->pad_x, sbase, th->foreground);
+    ui_draw_text(ren, f, lc, strlen(lc), (float)m->pad_x, sbase, GCOL_FG);
     const char *enc = "UTF-8";
     float ew = ui_text_width(f, enc, strlen(enc));
     float ex = (float)win_w - ew - (float)m->pad_x;
@@ -447,16 +483,16 @@ void ui_draw_chrome(SDL_Renderer *ren, Font *f, const Theme *th,
     if (modified) {
         const char *mod = "Modified  ";
         float mw = ui_text_width(f, mod, strlen(mod));
-        ui_draw_text(ren, f, mod, strlen(mod), rx - mw, sbase, th->foreground);
+        ui_draw_text(ren, f, mod, strlen(mod), rx - mw, sbase, GCOL_FG);
         rx -= mw;
     }
     if (lang && lang[0]) {
         char lg[64];
         snprintf(lg, sizeof(lg), "%s  ", lang);
         float lw = ui_text_width(f, lg, strlen(lg));
-        ui_draw_text(ren, f, lg, strlen(lg), rx - lw, sbase, th->foreground);
+        ui_draw_text(ren, f, lg, strlen(lg), rx - lw, sbase, GCOL_FG);
     }
-    ui_draw_text(ren, f, enc, strlen(enc), ex, sbase, th->foreground);
+    ui_draw_text(ren, f, enc, strlen(enc), ex, sbase, GCOL_FG);
 }
 
 // Count newlines to lay out a multi-line message box.
@@ -471,7 +507,7 @@ static int msg_lines(const char *msg) {
 // Draw s clipped to max_w: whole when it fits, else "…" plus the longest
 // fitting tail (keeps the filename visible).
 static void draw_path_clipped(SDL_Renderer *ren, Font *f, const char *s,
-                              float x, float baseline_y, SDL_Color color,
+                              float x, float baseline_y, uint8_t color,
                               float max_w) {
     size_t n = strlen(s);
     if (ui_text_width(f, s, n) <= max_w) {
@@ -516,7 +552,7 @@ static void ui_draw_picker(SDL_Renderer *ren, Font *f, const Theme *th,
     float inner_w = box.w - SC(m, 32);
     float baseline = box.y + SC(m, 14) + (float)f->asc;
     ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline,
-                 th->foreground);
+                 GCOL_FG);
     for (int i = 0; i < PICK_MAX; i++)
         modal->pick_rows[i] = (SDL_FRect){0, 0, 0, 0};
     float ry = baseline + SC(m, 10);
@@ -529,15 +565,15 @@ static void ui_draw_picker(SDL_Renderer *ren, Font *f, const Theme *th,
         if (i == modal->pick_sel)
             fill_rect(ren, th->selection, &r);
         float lb = ry + rh / 2.0f + (float)f->asc - (float)f->line_h / 2.0f;
-        draw_path_clipped(ren, f, modal->pick_items[i], tx, lb,
-                          th->foreground, inner_w);
+        draw_path_clipped(ren, f, modal->pick_items[i], tx, lb, GCOL_FG,
+                          inner_w);
         ry += rh;
     }
     // Hint + Cancel button.
     const char *hint = "Up/Down navigate - Enter opens - Esc cancels";
     float hb = box.y + box.h - SC(m, 14) - (float)f->line_h +
                (float)f->asc;
-    ui_draw_text(ren, f, hint, strlen(hint), tx, hb, th->line_number);
+    ui_draw_text(ren, f, hint, strlen(hint), tx, hb, GCOL_GREY);
     float btn_w = SC(m, 84), btn_h = (float)f->line_h + SC(m, 12);
     SDL_FRect r = {box.x + box.w - SC(m, 16) - btn_w,
                    box.y + box.h - btn_h - SC(m, 14), btn_w, btn_h};
@@ -550,7 +586,7 @@ static void ui_draw_picker(SDL_Renderer *ren, Font *f, const Theme *th,
                              strlen(modal->btn_label[0]));
     ui_draw_text(ren, f, modal->btn_label[0], strlen(modal->btn_label[0]),
                  r.x + (btn_w - lw) / 2.0f, r.y + SC(m, 6) + (float)f->asc,
-                 th->foreground);
+                 GCOL_FG);
 }
 
 void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
@@ -585,7 +621,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
 
     float tx = box.x + SC(m, 16);
     float baseline = box.y + SC(m, 14) + (float)f->asc;
-    ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline, th->foreground);
+    ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline, GCOL_FG);
     baseline += SC(m, 10);
     // Message lines.
     const char *p = modal->msg;
@@ -593,7 +629,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
         const char *nl = strchr(p, '\n');
         size_t n = nl ? (size_t)(nl - p) : strlen(p);
         baseline += (float)f->line_h + SC(m, 4);
-        ui_draw_text(ren, f, p, n, tx, baseline, th->foreground);
+        ui_draw_text(ren, f, p, n, tx, baseline, GCOL_FG);
         if (!nl)
             break;
         p = nl + 1;
@@ -612,7 +648,7 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
         float lw =
             ui_text_width(f, modal->btn_label[i], strlen(modal->btn_label[i]));
         ui_draw_text(ren, f, modal->btn_label[i], strlen(modal->btn_label[i]),
-                     bx + (btn_w - lw) / 2.0f, by + SC(m, 6) + (float)f->asc, th->foreground);
+                     bx + (btn_w - lw) / 2.0f, by + SC(m, 6) + (float)f->asc, GCOL_FG);
         bx -= btn_w + SC(m, 10);
     }
 }
@@ -686,7 +722,7 @@ void ui_draw_tabs(SDL_Renderer *ren, Font *f, const Theme *th,
         if (clip.w > 0) {
             SDL_SetRenderClipRect(ren, &clip);
             ui_draw_text(ren, f, label, strlen(label),
-                         tx + (float)m->pad_x, baseline, fg);
+                         tx + (float)m->pad_x, baseline, GCOL_FG);
             SDL_SetRenderClipRect(ren, NULL);
         }
         // Close × (two lines).

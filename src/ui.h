@@ -59,9 +59,20 @@ typedef struct {
     int pad_x;
     int cursor_w;
     int sidebar_w;
+    int scrollbar_w;
 } UiMetrics;
 
 UiMetrics ui_metrics_for(float scale);
+
+// True when the document needs a scrollbar (more lines than visible).
+static inline bool ui_has_scrollbar(size_t nlines, size_t visible) {
+    return nlines > visible;
+}
+// Track + thumb rectangles (framebuffer pixels) for the editor area.
+// Returns false when no scrollbar is needed; geometry matches hit-testing.
+bool ui_scrollbar_geom(const UiMetrics *m, size_t nlines, size_t visible,
+                       size_t scroll, int area_top, int area_h, int win_w,
+                       SDL_FRect *track, SDL_FRect *thumb);
 
 // --- Menu model ---
 int ui_menu_count(void);
@@ -150,7 +161,7 @@ ModalButton ui_modal_key(ModalState *m, SDL_Keycode key);
 
 // --- Drawing ---
 float ui_draw_text(SDL_Renderer *ren, Font *f, const char *s, size_t n,
-                   float x, float baseline_y, SDL_Color color);
+                   float x, float baseline_y, uint8_t color);
 float ui_text_width(Font *f, const char *s, size_t n);
 // Gutter width for total_lines (digits of the last line number + padding).
 int ui_gutter_w(Font *f, const UiMetrics *m, size_t total_lines);

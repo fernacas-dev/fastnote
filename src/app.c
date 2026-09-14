@@ -58,7 +58,22 @@ static float editor_area_x(App *app) {
 static float editor_area_w(App *app) {
     float w = (float)app->win_w - editor_area_x(app) -
               (float)app->m.pad_x / 2.0f;
+    // Keep text clear of the scrollbar when one is shown.
+    Editor *e = &app->tabs[app->cur];
+    size_t visible = visible_lines(app);
+    if (ui_has_scrollbar(e->buf.nlines, visible))
+        w -= (float)app->m.scrollbar_w;
     return w < 0 ? 0 : w;
+}
+
+// Scrollbar geometry for the current tab (false when hidden).
+static bool tab_scrollbar(App *app, SDL_FRect *track, SDL_FRect *thumb) {
+    Editor *e = &app->tabs[app->cur];
+    size_t visible = visible_lines(app);
+    int top = app->m.menu_h + app->m.tab_h;
+    int h = app->win_h - top - app->m.status_h;
+    return ui_scrollbar_geom(&app->m, e->buf.nlines, visible, e->scroll_line,
+                            top, h, app->win_w, track, thumb);
 }
 
 static void update_title(App *app) {
@@ -146,7 +161,7 @@ static size_t offset_at_point(App *app, float x, float y) {
             int cur = (int)pen;
             adv = (float)(((cur / tab_w) + 1) * tab_w - cur);
         } else {
-            const Glyph *g = font_get(&app->font, cp);
+            const Glyph *g = font_get(&app->font, cp, GCOL_FG);
             adv = g ? (float)g->adv : 0;
         }
         if (target <= pen + adv / 2.0f)
@@ -866,6 +881,30 @@ static void on_mouse_down(App *app, const SDL_MouseButtonEvent *b) {
             return;
         }
     }
+    // Scrollbar: thumb drag starts, track click pages.
+    {
+        SDL_FRect track, thumb;
+        if (tab_scrollbar(app, &track, &thumb) && x >= track.x &&
+            x < track.x + track.w && y >= track.y &&
+            y < track.y + track.h) {
+            Editor *e = &app->tabs[app->cur];
+            if (x >= thumb.x && x < thumb.x + thumb.w && y >= thumb.y &&
+                y < thumb.y + thumb.h) {
+                app->sb_drag = true;
+                app->sb_grab = y - thumb.y;
+            } else {
+                size_t vis = visible_lines(app);
+                long sl = (long)e->scroll_line;
+                sl += (y < thumb.y) ? -(long)vis : (long)vis;
+                if (sl < 0)
+                    sl = 0;
+                e->scroll_line = (size_t)sl;
+                editor_clamp_scroll(e, vis);
+                app_mark_dirty(app);
+            }
+            return;
+        }
+    }
     // Clicks on the line-number gutter are ignored.
     if (x < editor_area_x(app))
         return;
@@ -879,6 +918,27 @@ static void on_mouse_motion(App *app, const SDL_MouseMotionEvent *mo) {
     if (ui_modal_is_open(&app->modal))
         return;
     float x = fb_x(app, mo->x), y = fb_y(app, mo->y);
+    if (app->sb_drag) {
+        // Drag the thumb: map pointer back to first-visible-line.
+        SDL_FRect track, thumb;
+        if (tab_scrollbar(app, &track, &thumb) &&
+            track.h > thumb.h + 1.0f) {
+            Editor *e = &app->tabs[app->cur];
+            size_t visible = visible_lines(app);
+            size_t max = e->buf.nlines > visible ? e->buf.nlines - visible
+                                                 : 0;
+            float frac = (y - app->sb_grab - track.y) /
+                         (track.h - thumb.h);
+            if (frac < 0.0f)
+                frac = 0.0f;
+            if (frac > 1.0f)
+                frac = 1.0f;
+            e->scroll_line = (size_t)(frac * (float)max + 0.5f);
+            editor_clamp_scroll(e, visible);
+        }
+        app_mark_dirty(app);
+        return;
+    }
     if (app->dragging) {
         size_t at = offset_at_point(app, x, y);
         editor_set_cursor(&app->tabs[app->cur], at, true);
@@ -996,6 +1056,20 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
     }
     app->ntabs = 1;
     project_init(&app->project);
+    {
+        // Glyphs bake these colors: drawing then needs zero state changes.
+        const SDL_Color palette[8] = {
+            app->theme.foreground,  // GCOL_FG
+            app->theme.hl_keyword,  // GCOL_KEYWORD
+            app->theme.hl_string,   // GCOL_STRING
+            app->theme.hl_comment,  // GCOL_COMMENT
+            app->theme.hl_number,   // GCOL_NUMBER
+            app->theme.hl_preproc,  // GCOL_PREPROC
+            app->theme.hl_tag,      // GCOL_TAG
+            app->theme.line_number, // GCOL_GREY
+        };
+        font_set_palette(&app->font, palette);
+    }
     if (open_path) {
         char lerr[256];
         if (!editor_load(&app->tabs[app->cur], open_path, lerr, sizeof(lerr))) {
@@ -1088,10 +1162,12 @@ void app_step(App *app, int timeout_ms) {
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 on_mouse_down(app, &ev.button);
                 break;
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (ev.button.button == SDL_BUTTON_LEFT)
-                    app->dragging = false;
-                break;
+                case SDL_EVENT_MOUSE_BUTTON_UP:
+                    if (ev.button.button == SDL_BUTTON_LEFT) {
+                        app->dragging = false;
+                        app->sb_drag = false;
+                    }
+                    break;
             case SDL_EVENT_MOUSE_MOTION:
                 on_mouse_motion(app, &ev.motion);
                 break;

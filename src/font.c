@@ -9,6 +9,10 @@
 #include FT_FREETYPE_H
 
 #define GLYPH_CACHE_CAP 2048
+#define ATLAS_SIZE 1024
+#define ATLAS_PAD 1
+
+static SDL_Texture *rasterize_tight(Font *f, FT_Bitmap *bm, uint8_t color);
 
 // Monospace candidates, first existing file wins.
 static const char *const font_candidates[] = {
@@ -49,15 +53,22 @@ static const char *pick_font(const char *want) {
 }
 
 static void cache_free(Font *f) {
-    if (!f->cache.slots)
-        return;
-    for (size_t i = 0; i < f->cache.cap; i++) {
-        if (f->cache.slots[i].used && f->cache.slots[i].tex)
-            SDL_DestroyTexture(f->cache.slots[i].tex);
+    if (f->cache.slots) {
+        for (size_t i = 0; i < f->cache.cap; i++) {
+            if (f->cache.slots[i].used && f->cache.slots[i].tex) {
+                SDL_DestroyTexture(f->cache.slots[i].tex);
+                f->cache.slots[i].tex = NULL;
+            }
+        }
     }
     free(f->cache.slots);
     f->cache.slots = NULL;
     f->cache.cap = f->cache.count = 0;
+    if (f->atlas) {
+        SDL_DestroyTexture(f->atlas);
+        f->atlas = NULL;
+    }
+    f->pack_x = f->pack_y = f->pack_row_h = 0;
 }
 
 static bool cache_alloc(Font *f) {
@@ -76,14 +87,19 @@ static bool cache_evict_all(Font *f) {
     return cache_alloc(f);
 }
 
-static size_t glyph_hash(uint32_t cp) {
-    return (size_t)(cp * 2654435761u);
-}
-
 bool font_init(Font *f, SDL_Renderer *ren, const char *path, int px) {
     memset(f, 0, sizeof(*f));
     f->renderer = ren;
     f->px = px;
+    for (int i = 0; i < 8; i++)
+        f->palette[i] = (SDL_Color){0xFF, 0xFF, 0xFF, 0xFF};
+    // Backend choice (measured): the software renderer blits tight
+    // textures ~6x faster than atlas subrects (cache-friendly rows);
+    // GPU renderers prefer one shared texture (no binds, auto-batching).
+    f->use_atlas = true;
+    const char *rname = SDL_GetRendererName(ren);
+    if (rname && strcmp(rname, "software") == 0)
+        f->use_atlas = false;
 
     const char *found = pick_font(path);
     if (!found)
@@ -147,56 +163,139 @@ bool font_set_size(Font *f, int px) {
     return cache_alloc(f);
 }
 
-// Rasterize a FreeType bitmap (8-bit gray) into a white RGBA texture; the
-// drawing color is applied later via SDL_SetTextureColorMod so one cached
-// glyph serves any theme color. SDL_PIXELFORMAT_RGBA32 guarantees R,G,B,A
-// byte order in memory.
-static SDL_Texture *rasterize(Font *f, FT_Bitmap *bm) {
+void font_set_palette(Font *f, const SDL_Color palette[8]) {
+    for (int i = 0; i < 8; i++)
+        f->palette[i] = palette[i];
+    // Baked colors changed: drop rasterized glyphs (metrics reload lazily).
+    cache_alloc(f);
+}
+
+// Rasterize a FreeType bitmap (8-bit gray) into the atlas at a shelf-packed
+// position, pre-colored with palette[color]. Returns false when the glyph
+// can never fit (drawn as blank instead).
+static bool atlas_place(Font *f, FT_Bitmap *bm, uint8_t color, int *dx_out,
+                        int *dy_out) {
     int w = (int)bm->width, h = (int)bm->rows;
-    SDL_Surface *sf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
-    if (!sf)
-        return NULL;
-    uint8_t *px = (uint8_t *)sf->pixels;
+    if (w <= 0 || h <= 0 || w + 2 * ATLAS_PAD > ATLAS_SIZE ||
+        h + 2 * ATLAS_PAD > ATLAS_SIZE)
+        return false;
+    if (f->pack_x + w + ATLAS_PAD > ATLAS_SIZE) {
+        f->pack_x = ATLAS_PAD;
+        f->pack_y += f->pack_row_h;
+        f->pack_row_h = 0;
+    }
+    if (f->pack_y + h + ATLAS_PAD > ATLAS_SIZE) {
+        // Atlas full: drop everything, restart packing. Stale entries
+        // re-rasterize on demand via the generation check in font_get.
+        f->atlas_gen++;
+        if (f->atlas) {
+            SDL_DestroyTexture(f->atlas);
+            f->atlas = NULL;
+        }
+        f->pack_x = f->pack_y = f->pack_row_h = ATLAS_PAD;
+    }
+    if (!f->atlas) {
+        f->atlas = SDL_CreateTexture(f->renderer, SDL_PIXELFORMAT_RGBA32,
+                                     SDL_TEXTUREACCESS_STATIC, ATLAS_SIZE,
+                                     ATLAS_SIZE);
+        if (!f->atlas)
+            return false;
+        SDL_SetTextureBlendMode(f->atlas, SDL_BLENDMODE_BLEND);
+    }
+    int dx = f->pack_x, dy = f->pack_y;
+    // Expand coverage bytes to pre-colored RGBA for the upload.
+    SDL_Color c = f->palette[color & 7];
+    size_t np = (size_t)w * (size_t)h;
+    uint8_t *rgba = malloc(np * 4);
+    if (!rgba)
+        return false;
     for (int y = 0; y < h; y++) {
-        uint8_t *row = px + (size_t)y * (size_t)sf->pitch;
         uint8_t *src = bm->buffer + (size_t)y * (size_t)bm->pitch;
+        uint8_t *dst = rgba + (size_t)y * (size_t)w * 4;
         for (int x = 0; x < w; x++) {
-            row[4 * x + 0] = 0xFF;
-            row[4 * x + 1] = 0xFF;
-            row[4 * x + 2] = 0xFF;
-            row[4 * x + 3] = src[x];
+            dst[4 * x + 0] = c.r;
+            dst[4 * x + 1] = c.g;
+            dst[4 * x + 2] = c.b;
+            dst[4 * x + 3] = src[x];
         }
     }
-    SDL_Texture *tex = SDL_CreateTextureFromSurface(f->renderer, sf);
-    SDL_DestroySurface(sf);
-    if (tex)
-        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    return tex;
+    SDL_Rect dst = {dx, dy, w, h};
+    bool ok = SDL_UpdateTexture(f->atlas, &dst, rgba, w * 4);
+    free(rgba);
+    if (!ok)
+        return false;
+    f->pack_x += w + ATLAS_PAD;
+    if (h + ATLAS_PAD > f->pack_row_h)
+        f->pack_row_h = h + ATLAS_PAD;
+    *dx_out = dx;
+    *dy_out = dy;
+    return true;
 }
 
-void font_draw_glyph(SDL_Renderer *ren, Font *f, const Glyph *g, float pen_x,
-                     float baseline_y, SDL_Color color) {
-    (void)f;
-    if (!g || !g->tex)
-        return;
-    SDL_SetTextureColorMod(g->tex, color.r, color.g, color.b);
-    SDL_FRect dst = {pen_x + (float)g->bx, baseline_y - (float)g->by,
-                     (float)g->w, (float)g->h};
-    SDL_RenderTexture(ren, g->tex, NULL, &dst);
+// Rasterize (cp, color) into slot g (fresh or stale generation).
+static const Glyph *place_glyph(Font *f, Glyph *g, uint32_t cp,
+                                uint8_t color) {
+    FT_Face face = (FT_Face)f->face;
+    if (FT_Load_Char(face, (FT_ULong)cp, FT_LOAD_RENDER) != 0) {
+        // Unrenderable: substitute the replacement character once.
+        if (cp == 0xFFFDu)
+            return NULL;
+        return font_get(f, 0xFFFDu, color);
+    }
+    FT_GlyphSlot s = face->glyph;
+    g->codepoint = cp;
+    g->color = color;
+    g->w = (int)s->bitmap.width;
+    g->h = (int)s->bitmap.rows;
+    g->bx = s->bitmap_left;
+    g->by = s->bitmap_top;
+    g->adv = (int)(s->advance.x >> 6);
+    g->sx = g->sy = 0;
+    if (g->tex) {
+        SDL_DestroyTexture(g->tex);
+        g->tex = NULL;
+    }
+    g->gen = 0; // invalid until placed below
+    g->used = true;
+    if (g->w > 0 && g->h > 0) {
+        if (f->use_atlas) {
+            int dx, dy;
+            if (atlas_place(f, &s->bitmap, color, &dx, &dy)) {
+                g->sx = dx;
+                g->sy = dy;
+                g->gen = f->atlas_gen;
+            }
+            // else: oversized/failed glyph keeps its advance, draws blank.
+        } else {
+            g->tex = rasterize_tight(f, &s->bitmap, color);
+            // NULL tex still usable (advance only).
+        }
+    }
+    return g;
 }
 
-const Glyph *font_get(Font *f, uint32_t cp) {
+static size_t glyph_key(uint32_t cp, uint8_t color) {
+    return (size_t)(cp * 2654435761u) ^ (size_t)((uint32_t)color * 0x9E3779B9u);
+}
+
+const Glyph *font_get(Font *f, uint32_t cp, uint8_t color) {
+    color &= 7;
     // Linear probe. Entries are never deleted (only whole-cache clears),
     // so the first empty slot ends the chain for any key.
     GlyphCache *c = &f->cache;
     size_t mask = c->cap - 1; // cap is a power of two
-    size_t i = glyph_hash(cp) & mask;
+    size_t i = glyph_key(cp, color) & mask;
     size_t free_i = c->cap; // sentinel: no free slot seen
     for (size_t n = 0; n < c->cap; n++) {
         Glyph *g = &c->slots[i];
         if (g->used) {
-            if (g->codepoint == cp)
+            if (g->codepoint == cp && g->color == color) {
+                // Atlas may have been evicted underneath: re-rasterize
+                // stale generations in place.
+                if (g->w > 0 && g->h > 0 && g->gen != f->atlas_gen)
+                    return place_glyph(f, g, cp, color);
                 return g;
+            }
         } else {
             free_i = i;
             break;
@@ -208,33 +307,67 @@ const Glyph *font_get(Font *f, uint32_t cp) {
         if (!cache_evict_all(f))
             return NULL;
         c = &f->cache;
-        free_i = glyph_hash(cp) & (c->cap - 1);
+        free_i = glyph_key(cp, color) & (c->cap - 1);
     }
     Glyph *g = &c->slots[free_i];
-    FT_Face face = (FT_Face)f->face;
-    if (FT_Load_Char(face, (FT_ULong)cp, FT_LOAD_RENDER) != 0) {
-        // Unrenderable: substitute the replacement character once.
-        if (cp == 0xFFFDu)
-            return NULL;
-        return font_get(f, 0xFFFDu);
+    const Glyph *placed = place_glyph(f, g, cp, color);
+    if (placed)
+        c->count++;
+    return placed;
+}
+
+// Tight per-glyph texture for the software backend (cache-friendly rows).
+// SDL_PIXELFORMAT_RGBA32 guarantees R,G,B,A byte order in memory.
+static SDL_Texture *rasterize_tight(Font *f, FT_Bitmap *bm, uint8_t color) {
+    int w = (int)bm->width, h = (int)bm->rows;
+    SDL_Surface *sf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
+    if (!sf)
+        return NULL;
+    SDL_Color c = f->palette[color & 7];
+    uint8_t *px = (uint8_t *)sf->pixels;
+    for (int y = 0; y < h; y++) {
+        uint8_t *row = px + (size_t)y * (size_t)sf->pitch;
+        uint8_t *src = bm->buffer + (size_t)y * (size_t)bm->pitch;
+        for (int x = 0; x < w; x++) {
+            row[4 * x + 0] = c.r;
+            row[4 * x + 1] = c.g;
+            row[4 * x + 2] = c.b;
+            row[4 * x + 3] = src[x];
+        }
     }
-    FT_GlyphSlot s = face->glyph;
-    g->codepoint = cp;
-    g->w = (int)s->bitmap.width;
-    g->h = (int)s->bitmap.rows;
-    g->bx = s->bitmap_left;
-    g->by = s->bitmap_top;
-    g->adv = (int)(s->advance.x >> 6);
-    g->tex = NULL;
-    g->used = true;
-    if (g->w > 0 && g->h > 0)
-        g->tex = rasterize(f, &s->bitmap); // NULL tex still usable
-    c->count++;
-    return g;
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(f->renderer, sf);
+    SDL_DestroySurface(sf);
+    if (tex)
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    return tex;
+}
+
+// A glyph draws only when its backing store is live.
+static bool glyph_live(const Font *f, const Glyph *g) {
+    if (!g || g->w <= 0 || g->h <= 0)
+        return false;
+    if (f->use_atlas)
+        return g->gen == f->atlas_gen && f->atlas;
+    return g->tex != NULL;
+}
+
+void font_draw_glyph(SDL_Renderer *ren, Font *f, const Glyph *g, float pen_x,
+                     float baseline_y) {
+    if (!glyph_live(f, g))
+        return;
+    SDL_FRect dst = {pen_x + (float)g->bx, baseline_y - (float)g->by,
+                     (float)g->w, (float)g->h};
+    if (f->use_atlas) {
+        SDL_FRect src = {(float)g->sx, (float)g->sy, (float)g->w,
+                         (float)g->h};
+        SDL_RenderTexture(ren, f->atlas, &src, &dst);
+    } else {
+        SDL_RenderTexture(ren, g->tex, NULL, &dst);
+    }
 }
 
 int font_tab_width(Font *f, int cols) {
-    const Glyph *sp = font_get(f, (uint32_t)' ');
+    const Glyph *sp = font_get(f, (uint32_t)' ', GCOL_FG);
     int adv = (sp && sp->adv > 0) ? sp->adv : f->px / 2;
     if (adv <= 0)
         adv = 1;
@@ -257,7 +390,7 @@ int font_text_width_max(Font *f, const char *s, size_t n, int tab_w,
         if (cp == '\t') {
             x = ((x / tab_w) + 1) * tab_w;
         } else {
-            const Glyph *g = font_get(f, cp);
+            const Glyph *g = font_get(f, cp, GCOL_FG);
             if (g)
                 x += g->adv;
         }

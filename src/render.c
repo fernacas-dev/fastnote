@@ -14,22 +14,22 @@
 #define HL_BUDGET_LINES 3000
 #define HL_KINDS_CAP 65536
 
-static SDL_Color hl_kind_color(const App *app, uint8_t kind) {
+static uint8_t hl_kind_idx(uint8_t kind) {
     switch (kind) {
     case HL_KEYWORD:
-        return app->theme.hl_keyword;
+        return GCOL_KEYWORD;
     case HL_COMMENT:
-        return app->theme.hl_comment;
+        return GCOL_COMMENT;
     case HL_STRING:
-        return app->theme.hl_string;
+        return GCOL_STRING;
     case HL_NUMBER:
-        return app->theme.hl_number;
+        return GCOL_NUMBER;
     case HL_PREPROC:
-        return app->theme.hl_preproc;
+        return GCOL_PREPROC;
     case HL_TAG:
-        return app->theme.hl_tag;
+        return GCOL_TAG;
     default:
-        return app->theme.foreground;
+        return GCOL_FG;
     }
 }
 
@@ -108,7 +108,7 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
         }
     }
 
-    // Glyphs.
+    // Glyphs (batched: quads accumulate, one submit per frame).
     float pen = area_x - (float)e->scroll_x;
     float end_x = area_x + area_w;
     size_t i = 0;
@@ -122,14 +122,13 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
             int cur = (int)(pen - area_x + (float)e->scroll_x);
             pen += (float)(((cur / tab_w) + 1) * tab_w - cur);
         } else {
-            const Glyph *g = font_get(f, cp);
+            const Glyph *g = font_get(f, cp, kinds && i < scanned
+                                                 ? hl_kind_idx(kinds[i])
+                                                 : GCOL_FG);
             if (g) {
-                if (g->tex && pen + (float)(g->bx + g->w) > area_x &&
-                    pen < end_x) {
-                    SDL_Color gc = (kinds && i < scanned)
-                                       ? hl_kind_color(app, kinds[i])
-                                       : app->theme.foreground;
-                    font_draw_glyph(ren, f, g, pen, baseline, gc);
+                if (g->w > 0 && g->h > 0 &&
+                    pen + (float)(g->bx + g->w) > area_x && pen < end_x) {
+                    font_draw_glyph(ren, f, g, pen, baseline);
                 }
                 pen += (float)g->adv;
                 if (pen - area_x > area_w + 64.0f && i > 0) {
@@ -164,6 +163,18 @@ bool render_frame(App *app) {
     if (visible == 0)
         visible = 1;
     editor_clamp_scroll(e, visible);
+
+    // Scrollbar reserves the right edge when the document overflows.
+    SDL_FRect sb_track, sb_thumb;
+    bool scrollbar = ui_scrollbar_geom(m, e->buf.nlines, visible,
+                                       e->scroll_line, (int)area_y,
+                                       (int)area_h, app->win_w, &sb_track,
+                                       &sb_thumb);
+    if (scrollbar) {
+        area_w -= (float)m->scrollbar_w;
+        if (area_w < 0)
+            area_w = 0;
+    }
 
     // Bring highlight block states up to the last visible line, bounded by
     // the per-frame budget. Unfinished work keeps the frame "pending".
@@ -205,13 +216,31 @@ bool render_frame(App *app) {
         // Gutter: right-aligned number; current line in foreground.
         char num[32];
         snprintf(num, sizeof(num), "%zu", line + 1);
-        float nw = ui_text_width(f, num, strlen(num));
-        SDL_Color nc =
-            line == cursor_line ? app->theme.foreground : app->theme.line_number;
-        ui_draw_text(ren, f, num, strlen(num),
-                     area_x - nw - (float)m->pad_x, top_y + (float)f->asc,
-                     nc);
+        size_t nn = strlen(num);
+        float nw = ui_text_width(f, num, nn);
+        uint8_t nc = line == cursor_line ? GCOL_FG : GCOL_GREY;
+        float nx = area_x - nw - (float)m->pad_x;
+        float nb = top_y + (float)f->asc;
+        for (size_t c = 0; c < nn; c++) {
+            uint32_t cp = (uint32_t)(uint8_t)num[c]; // ASCII digits
+            const Glyph *g = font_get(f, cp, nc);
+            if (!g)
+                continue;
+            font_draw_glyph(ren, f, g, nx, nb);
+            nx += (float)g->adv;
+        }
         draw_line(app, line, top_y, area_x, area_w, tab_w);
+    }
+
+    // Scrollbar track + thumb above the text.
+    if (scrollbar) {
+        SDL_SetRenderDrawColor(ren, app->theme.menu.r, app->theme.menu.g,
+                               app->theme.menu.b, 0xFF);
+        SDL_RenderFillRect(ren, &sb_track);
+        SDL_SetRenderDrawColor(ren, app->theme.selection.r,
+                               app->theme.selection.g,
+                               app->theme.selection.b, 0xFF);
+        SDL_RenderFillRect(ren, &sb_thumb);
     }
 
     // Cursor (blinking).
