@@ -64,6 +64,7 @@ fastnote [options] [file]
 | Cut / Copy / Paste / Select All | Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A |
 | New tab / Close tab | Ctrl+N / Ctrl+W |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
+| Open recent file | Ctrl+R |
 | Word jump | Ctrl+Left / Ctrl+Right |
 | Doc start / end | Ctrl+Home / Ctrl+End |
 | Page up / down | PageUp / PageDown |
@@ -104,6 +105,7 @@ src/
   project.[hc]   project sidebar: folder scan, file list, open-on-click
   filetype.[hc]  language identification by file name (status bar)
   highlight.[hc] hand-rolled syntax highlighter (no dependencies)
+  recents.[hc]   recent files/folders with XDG persistence
   theme.h        centralized dark palette + layout constants
 tests/
   test_main.c    unit tests (text buffer, UTF-8, editor, undo)
@@ -167,8 +169,18 @@ Hidden files, symlinks and unreadable subdirectories are skipped; caps of
 20 000 entries, 1024 collapses and 64 depth keep stray mounts from
 stalling the UI.
 
-## Syntax highlighting
+## Recent files and folders
 
+`File → Open Recent File` (`Ctrl+R`) and `File → Open Recent Folder` open
+a picker with the 10 most recent entries each (most-recent-first, deduped).
+Navigate with Up/Down or the mouse, Enter opens, Esc cancels; long paths
+show an ellipsis with the filename intact. Files open in a fresh tab,
+folders load the project sidebar. Lists persist to
+`$XDG_CONFIG_HOME/fastnote/recent` (one `F\t/D\t` line each), missing
+entries are pruned on load and before showing, and all I/O is best-effort
+— failures never surface in the UI.
+
+## Syntax highlighting
 Minimal and dependency-free (`highlight.h/c`): hand-rolled per-line
 tokenizers for C, C++, Java, JavaScript/TypeScript, Python, Ruby, Shell
 and HTML/XML — keywords, comments, strings, numbers, preprocessor lines

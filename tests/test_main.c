@@ -7,6 +7,7 @@
 #include "editor.h"
 #include "filetype.h"
 #include "highlight.h"
+#include "recents.h"
 #include "text_buffer.h"
 
 static int failures = 0;
@@ -275,6 +276,33 @@ static void test_highlight(void) {
     CHECK(hl_lang_for_name("CSS") == HLANG_NONE);
 }
 
+static void test_recents(void) {
+    Recents r;
+    memset(&r, 0, sizeof(r)); // no disk touch: pushes never save
+    recents_push_file(&r, "/b.txt");
+    recents_push_file(&r, "/a.txt");
+    CHECK(r.nfiles == 2 && strcmp(r.files[0], "/a.txt") == 0);
+    recents_push_file(&r, "/b.txt"); // dedupe to front
+    CHECK(r.nfiles == 2 && strcmp(r.files[0], "/b.txt") == 0 &&
+          strcmp(r.files[1], "/a.txt") == 0);
+    recents_push_file(&r, "/b.txt"); // already front: unchanged
+    CHECK(r.nfiles == 2);
+    for (int i = 0; i < 15; i++) {
+        char p[32];
+        snprintf(p, sizeof(p), "/f%d", i);
+        recents_push_file(&r, p);
+    }
+    CHECK(r.nfiles == RECENT_MAX);
+    CHECK(strcmp(r.files[0], "/f14") == 0);
+    recents_push_dir(&r, "/tmp"); // exists
+    CHECK(r.ndirs == 1);
+    recents_push_dir(&r, "/nonexistent-fn-xyz");
+    CHECK(r.ndirs == 2);
+    recents_prune(&r);
+    CHECK(r.ndirs == 1 && strcmp(r.dirs[0], "/tmp") == 0);
+    CHECK(r.nfiles == 0); // /f0..f14 never existed
+}
+
 static void test_goal_col(void) {
     Editor e;
     CHECK(editor_init(&e));
@@ -304,6 +332,7 @@ int main(void) {
     test_goal_col();
     test_filetype();
     test_highlight();
+    test_recents();
     if (failures == 0)
         printf("all tests passed\n");
     return failures != 0;

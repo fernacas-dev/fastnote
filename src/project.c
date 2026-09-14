@@ -176,7 +176,7 @@ static bool scan_dir(Project *p, const char *rel, int depth) {
         nk++;
     }
     closedir(d);
-    if (ok) {
+    if (ok && nk > 0) {
         qsort(kids, nk, sizeof(Child), child_cmp);
         for (size_t i = 0; i < nk && ok; i++) {
             if (strlen(rel) + 1 + strlen(kids[i].name) >= 2048)

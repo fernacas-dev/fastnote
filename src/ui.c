@@ -37,6 +37,8 @@ static const MenuItem file_items[] = {
     {"New", "Ctrl+N", ACT_NEW},
     {"Open", "Ctrl+O", ACT_OPEN},
     {"Open Folder", "", ACT_OPEN_FOLDER},
+    {"Open Recent File", "Ctrl+R", ACT_RECENT_FILE},
+    {"Open Recent Folder", "", ACT_RECENT_FOLDER},
     {"Save", "Ctrl+S", ACT_SAVE},
     {"Save As", "Ctrl+Shift+S", ACT_SAVE_AS},
     {"Close Tab", "Ctrl+W", ACT_CLOSE_TAB},
@@ -286,6 +288,44 @@ void ui_modal_error(ModalState *m, const char *msg) {
     m->btn_label[0] = "OK";
 }
 
+void ui_modal_picker(ModalState *m, const char *title,
+                     char paths[][1024], int n, bool folders) {
+    m->kind = MODAL_PICKER;
+    snprintf(m->title, sizeof(m->title), "%s", title);
+    m->msg[0] = '\0';
+    m->npick = n < PICK_MAX ? n : PICK_MAX;
+    if (m->npick < 0)
+        m->npick = 0;
+    for (int i = 0; i < m->npick; i++)
+        snprintf(m->pick_items[i], sizeof(m->pick_items[i]), "%s", paths[i]);
+    m->pick_sel = 0;
+    m->pick_folders = folders;
+    m->nbtn = 1;
+    m->btn_id[0] = MB_CANCEL;
+    m->btn_label[0] = "Cancel";
+}
+
+int ui_modal_pick_click(ModalState *m, float x, float y) {
+    if (m->kind != MODAL_PICKER)
+        return -1;
+    for (int i = 0; i < m->npick; i++) {
+        SDL_FRect r = m->pick_rows[i];
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+            return i;
+    }
+    return -1;
+}
+
+void ui_modal_pick_move(ModalState *m, int delta) {
+    if (m->kind != MODAL_PICKER || m->npick <= 0)
+        return;
+    m->pick_sel += delta;
+    if (m->pick_sel < 0)
+        m->pick_sel = 0;
+    if (m->pick_sel >= m->npick)
+        m->pick_sel = m->npick - 1;
+}
+
 ModalButton ui_modal_click(ModalState *m, float x, float y) {
     for (int i = 0; i < m->nbtn; i++) {
         SDL_FRect r = m->buttons[i];
@@ -406,6 +446,91 @@ static int msg_lines(const char *msg) {
     return n;
 }
 
+// Draw s clipped to max_w: whole when it fits, else "…" plus the longest
+// fitting tail (keeps the filename visible).
+static void draw_path_clipped(SDL_Renderer *ren, Font *f, const char *s,
+                              float x, float baseline_y, SDL_Color color,
+                              float max_w) {
+    size_t n = strlen(s);
+    if (ui_text_width(f, s, n) <= max_w) {
+        ui_draw_text(ren, f, s, n, x, baseline_y, color);
+        return;
+    }
+    static const char ell[] = "\xE2\x80\xA6"; // U+2026
+    float ew = ui_text_width(f, ell, sizeof(ell) - 1);
+    size_t start = 0;
+    while (start < n) {
+        if (ui_text_width(f, s + start, n - start) + ew <= max_w)
+            break;
+        uint32_t cp;
+        size_t k = utf8_decode(s + start, n - start, &cp);
+        start += k ? k : 1;
+    }
+    float nx = ui_draw_text(ren, f, ell, sizeof(ell) - 1, x, baseline_y,
+                            color);
+    ui_draw_text(ren, f, s + start, n - start, x + nx, baseline_y, color);
+}
+
+static void ui_draw_picker(SDL_Renderer *ren, Font *f, const Theme *th,
+                           const UiMetrics *m, ModalState *modal, int win_w,
+                           int win_h) {
+    float rh = (float)f->line_h + SC(m, 8);
+    float bw = SC(m, 460);
+    float bh = SC(m, 14) + (float)f->asc + SC(m, 10) +
+               (float)modal->npick * rh + (float)f->line_h + SC(m, 14) * 3.0f +
+               (float)f->line_h;
+    if (bw > (float)win_w - SC(m, 40))
+        bw = (float)win_w - SC(m, 40);
+    if (bh > (float)win_h - SC(m, 40))
+        bh = (float)win_h - SC(m, 40);
+    SDL_FRect box = {(float)(((double)win_w - (double)bw) / 2.0),
+                     (float)(((double)win_h - (double)bh) / 2.0), bw, bh};
+    fill_rect(ren, th->menu, &box);
+    SDL_SetRenderDrawColor(ren, th->border.r, th->border.g, th->border.b,
+                           th->border.a);
+    SDL_RenderRect(ren, &box);
+
+    float tx = box.x + SC(m, 16);
+    float inner_w = box.w - SC(m, 32);
+    float baseline = box.y + SC(m, 14) + (float)f->asc;
+    ui_draw_text(ren, f, modal->title, strlen(modal->title), tx, baseline,
+                 th->foreground);
+    for (int i = 0; i < PICK_MAX; i++)
+        modal->pick_rows[i] = (SDL_FRect){0, 0, 0, 0};
+    float ry = baseline + SC(m, 10);
+    for (int i = 0; i < modal->npick; i++) {
+        // Skip rows that would overflow a short window.
+        if (ry + rh > box.y + box.h - SC(m, 14) * 2.0f - (float)f->line_h)
+            break;
+        SDL_FRect r = {box.x + SC(m, 8), ry, box.w - SC(m, 16), rh};
+        modal->pick_rows[i] = r;
+        if (i == modal->pick_sel)
+            fill_rect(ren, th->selection, &r);
+        float lb = ry + rh / 2.0f + (float)f->asc - (float)f->line_h / 2.0f;
+        draw_path_clipped(ren, f, modal->pick_items[i], tx, lb,
+                          th->foreground, inner_w);
+        ry += rh;
+    }
+    // Hint + Cancel button.
+    const char *hint = "Up/Down navigate - Enter opens - Esc cancels";
+    float hb = box.y + box.h - SC(m, 14) - (float)f->line_h +
+               (float)f->asc;
+    ui_draw_text(ren, f, hint, strlen(hint), tx, hb, th->line_number);
+    float btn_w = SC(m, 84), btn_h = (float)f->line_h + SC(m, 12);
+    SDL_FRect r = {box.x + box.w - SC(m, 16) - btn_w,
+                   box.y + box.h - btn_h - SC(m, 14), btn_w, btn_h};
+    modal->buttons[0] = r;
+    fill_rect(ren, th->selection, &r);
+    SDL_SetRenderDrawColor(ren, th->border.r, th->border.g, th->border.b,
+                           th->border.a);
+    SDL_RenderRect(ren, &r);
+    float lw = ui_text_width(f, modal->btn_label[0],
+                             strlen(modal->btn_label[0]));
+    ui_draw_text(ren, f, modal->btn_label[0], strlen(modal->btn_label[0]),
+                 r.x + (btn_w - lw) / 2.0f, r.y + SC(m, 6) + (float)f->asc,
+                 th->foreground);
+}
+
 void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
                    const UiMetrics *m, ModalState *modal, int win_w,
                    int win_h) {
@@ -417,6 +542,11 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
     SDL_FRect full = {0, 0, (float)win_w, (float)win_h};
     SDL_RenderFillRect(ren, &full);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
+
+    if (modal->kind == MODAL_PICKER) {
+        ui_draw_picker(ren, f, th, m, modal, win_w, win_h);
+        return;
+    }
 
     int rows = msg_lines(modal->msg);
     float bw = SC(m, 340);

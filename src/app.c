@@ -6,6 +6,9 @@
 
 #include "render.h"
 
+_Static_assert(RECENT_MAX == PICK_MAX,
+               "recents lists must fit the picker rows");
+
 #define FN_WIN_W 1152
 #define FN_WIN_H 648
 
@@ -189,6 +192,9 @@ static void request_open_path(App *app, const char *path) {
             char msg[512];
             snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
             ui_modal_error(&app->modal, msg);
+        } else {
+            recents_push_file(&app->recents, path);
+            recents_save(&app->recents);
         }
         update_title(app);
         reveal_cursor(app);
@@ -287,6 +293,54 @@ static void request_close_tab(App *app, size_t i) {
     }
 }
 
+// --- Recent files/folders ---
+
+// Open the picker's selected entry (file -> fresh tab, folder -> project).
+static void accept_pick(App *app) {
+    ModalState *m = &app->modal;
+    if (m->kind != MODAL_PICKER || m->pick_sel < 0 ||
+        m->pick_sel >= m->npick)
+        return;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s", m->pick_items[m->pick_sel]);
+    bool folders = m->pick_folders;
+    ui_modal_close(m);
+    if (folders) {
+        char err[256];
+        if (!project_open(&app->project, path, err, sizeof(err))) {
+            char msg[512];
+            snprintf(msg, sizeof(msg), "Could not open folder:\n%s", err);
+            ui_modal_error(&app->modal, msg);
+        }
+    } else {
+        app->cur = target_tab_for_open(app);
+        request_open_path(app, path);
+    }
+    app_mark_dirty(app);
+}
+
+static void open_recents_picker(App *app, bool folders) {
+    recents_prune(&app->recents);
+    if (folders) {
+        if (app->recents.ndirs <= 0) {
+            ui_modal_error(&app->modal, "No recent folders yet");
+            app_mark_dirty(app);
+            return;
+        }
+        ui_modal_picker(&app->modal, "Open Recent Folder",
+                        app->recents.dirs, app->recents.ndirs, true);
+    } else {
+        if (app->recents.nfiles <= 0) {
+            ui_modal_error(&app->modal, "No recent files yet");
+            app_mark_dirty(app);
+            return;
+        }
+        ui_modal_picker(&app->modal, "Open Recent File",
+                        app->recents.files, app->recents.nfiles, false);
+    }
+    app_mark_dirty(app);
+}
+
 // --- File actions ---
 
 static void run_after(App *app) {
@@ -300,6 +354,9 @@ static void run_after(App *app) {
             char msg[512];
             snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
             ui_modal_error(&app->modal, msg);
+        } else {
+            recents_push_file(&app->recents, app->pending_path);
+            recents_save(&app->recents);
         }
     } else if (a == AFTER_EXIT) {
         if (app->exit_mode)
@@ -403,6 +460,12 @@ static void do_action(App *app, MenuAction a) {
         break;
     case ACT_EXIT:
         request_exit(app);
+        break;
+    case ACT_RECENT_FILE:
+        open_recents_picker(app, false);
+        break;
+    case ACT_RECENT_FOLDER:
+        open_recents_picker(app, true);
         break;
     case ACT_CLOSE_TAB:
         request_close_tab(app, app->cur);
@@ -528,6 +591,9 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
                 char msg[512];
                 snprintf(msg, sizeof(msg), "Could not open folder:\n%s", err);
                 ui_modal_error(&app->modal, msg);
+            } else {
+                recents_push_dir(&app->recents, res->path);
+                recents_save(&app->recents);
             }
         }
     } else if (res->is_save) {
@@ -538,7 +604,11 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
                 snprintf(msg, sizeof(msg), "Could not save file:\n%s", err);
                 ui_modal_error(&app->modal, msg);
                 app->after = AFTER_NONE;
-            } else if (app->after != AFTER_NONE) {
+            } else {
+                recents_push_file(&app->recents, res->path);
+                recents_save(&app->recents);
+            }
+            if (app->after != AFTER_NONE) {
                 // A confirm-save requested this dialog; continue.
                 AfterAction keep = app->after;
                 if (keep == AFTER_NEW || keep == AFTER_EXIT ||
@@ -574,6 +644,21 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
     bool shift = (mod & SDL_KMOD_SHIFT) != 0;
 
     if (ui_modal_is_open(&app->modal)) {
+        if (app->modal.kind == MODAL_PICKER) {
+            if (key == SDLK_UP) {
+                ui_modal_pick_move(&app->modal, -1);
+                app_mark_dirty(app);
+            } else if (key == SDLK_DOWN) {
+                ui_modal_pick_move(&app->modal, 1);
+                app_mark_dirty(app);
+            } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+                accept_pick(app);
+            } else if (key == SDLK_ESCAPE) {
+                ui_modal_close(&app->modal);
+                app_mark_dirty(app);
+            }
+            return;
+        }
         handle_modal_button(app, ui_modal_key(&app->modal, key));
         return;
     }
@@ -607,6 +692,7 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         case SDLK_X: a = ACT_CUT; break;
         case SDLK_V: a = ACT_PASTE; break;
         case SDLK_B: a = ACT_TOGGLE_SIDEBAR; break;
+        case SDLK_R: a = ACT_RECENT_FILE; break;
         case SDLK_W: a = ACT_CLOSE_TAB; break;
         case SDLK_TAB: a = shift ? ACT_TAB_PREV : ACT_TAB_NEXT; break;
         case SDLK_PLUS:
@@ -712,6 +798,16 @@ static void on_mouse_down(App *app, const SDL_MouseButtonEvent *b) {
         return;
     float x = fb_x(app, b->x), y = fb_y(app, b->y);
     if (ui_modal_is_open(&app->modal)) {
+        if (app->modal.kind == MODAL_PICKER) {
+            int row = ui_modal_pick_click(&app->modal, x, y);
+            if (row >= 0) {
+                app->modal.pick_sel = row;
+                accept_pick(app);
+            } else {
+                handle_modal_button(app, ui_modal_click(&app->modal, x, y));
+            }
+            return;
+        }
         handle_modal_button(app, ui_modal_click(&app->modal, x, y));
         return;
     }
@@ -878,6 +974,7 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
     app->ntabs = 0;
     app->tabs_cap = 0;
     app->cur = 0;
+    recents_init(&app->recents);
     if (!tabs_grow(app) || !editor_init(&app->tabs[0])) {
         snprintf(err, errcap, "Out of memory");
         free(app->tabs);
@@ -898,6 +995,9 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
             snprintf(app->tabs[app->cur].path, sizeof(app->tabs[app->cur].path), "%s", open_path);
             app->tabs[app->cur].has_path = true;
             ui_modal_error(&app->modal, lerr);
+        } else {
+            recents_push_file(&app->recents, open_path);
+            recents_save(&app->recents);
         }
     }
     app->dlg_event = filedialog_event_type();

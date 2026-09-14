@@ -10,6 +10,7 @@
 #include "file_dialog.h"
 #include "font.h"
 #include "project.h"
+#include "recents.h"
 #include "theme.h"
 #include "ui.h"
 
@@ -32,6 +33,7 @@ typedef struct App {
     size_t tabs_cap;
     size_t cur;
     bool exit_mode; // quitting: confirming unsaved tabs one by one
+    Recents recents;
     Theme theme;
     Project project;
     MenuState menu;

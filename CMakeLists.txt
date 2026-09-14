@@ -20,6 +20,7 @@ set(FASTNOTE_SOURCES
     src/file_dialog.c
     src/filetype.c
     src/highlight.c
+    src/recents.c
     src/project.c
     src/ui.c
     src/render.c
@@ -48,6 +49,7 @@ add_executable(fastnote_tests
     src/editor.c
     src/filetype.c
     src/highlight.c
+    src/recents.c
 )
 target_include_directories(fastnote_tests PRIVATE src)
 target_compile_options(fastnote_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
@@ -67,6 +69,7 @@ add_executable(fastnote_itest
     src/file_dialog.c
     src/filetype.c
     src/highlight.c
+    src/recents.c
     src/project.c
     src/ui.c
     src/render.c

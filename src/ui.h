@@ -31,6 +31,8 @@ typedef enum {
     ACT_CLOSE_TAB,
     ACT_TAB_NEXT,
     ACT_TAB_PREV,
+    ACT_RECENT_FILE,
+    ACT_RECENT_FOLDER,
 } MenuAction;
 
 typedef struct {
@@ -96,9 +98,17 @@ TabClick ui_tab_click(const UiMetrics *m, const Editor *tabs, int ntabs,
                       float x0, float y0, float win_w, float x, float y,
                       int *idx);
 
-// --- Modal dialogs (in-app Save/Discard/Cancel + error popups) ---
-typedef enum { MODAL_NONE, MODAL_CONFIRM, MODAL_ERROR } ModalKind;
+// --- Modal dialogs (in-app Save/Discard/Cancel, errors, recent picker) ---
+typedef enum {
+    MODAL_NONE,
+    MODAL_CONFIRM,
+    MODAL_ERROR,
+    MODAL_PICKER
+} ModalKind;
 typedef enum { MB_NONE, MB_SAVE, MB_DISCARD, MB_CANCEL, MB_OK } ModalButton;
+
+// Max rows offered by the recent-files/folders picker.
+#define PICK_MAX 10
 
 typedef struct {
     ModalKind kind;
@@ -108,10 +118,24 @@ typedef struct {
     ModalButton btn_id[3];
     const char *btn_label[3];
     int nbtn;
+    // Picker state (kind == MODAL_PICKER).
+    char pick_items[PICK_MAX][1024];
+    SDL_FRect pick_rows[PICK_MAX];
+    int npick;
+    int pick_sel;
+    bool pick_folders;
 } ModalState;
 
 void ui_modal_confirm(ModalState *m, const char *what);
 void ui_modal_error(ModalState *m, const char *msg);
+// Recent picker: title + up to PICK_MAX absolute paths. Selection starts
+// at row 0; folders=true opens folders, false opens files.
+void ui_modal_picker(ModalState *m, const char *title,
+                     char paths[][1024], int n, bool folders);
+// Row index under the point, or -1 (uses rects from the last draw).
+int ui_modal_pick_click(ModalState *m, float x, float y);
+// Move the keyboard selection, clamped.
+void ui_modal_pick_move(ModalState *m, int delta);
 static inline void ui_modal_close(ModalState *m) { m->kind = MODAL_NONE; }
 static inline bool ui_modal_is_open(const ModalState *m) {
     return m->kind != MODAL_NONE;
