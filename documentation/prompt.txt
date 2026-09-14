@@ -1,0 +1,1183 @@
+# FastNote — High-Performance Minimal Linux Text Editor
+
+## Role
+
+You are an expert systems programmer specializing in C, Linux desktop applications, SDL3, text rendering, and performance-oriented software architecture.
+
+Your task is to implement **FastNote**, an extremely lightweight and fast graphical text editor for Linux.
+
+The primary goals are:
+
+1. Extremely fast startup.
+2. Very low memory usage.
+3. Minimal CPU usage while idle.
+4. Responsive keyboard and mouse input.
+5. Simple and maintainable C code.
+6. Minimal external dependencies.
+7. A small and clean user interface.
+8. No unnecessary features or abstractions.
+
+Do not over-engineer the application.
+
+---
+
+# 1. Technology Requirements
+
+Use:
+
+* **C17**
+* **SDL3**
+* **FreeType**
+* Standard C library
+* POSIX APIs where appropriate
+* CMake
+
+Do NOT use:
+
+* GTK
+* Qt
+* wxWidgets
+* Electron
+* Tauri
+* Scintilla
+* GtkSourceView
+* ImGui
+* OpenGL
+* Vulkan
+* Rust
+* C++
+* JavaScript
+* Python
+
+SDL3 should be responsible for:
+
+* Window creation
+* Window resizing
+* Keyboard input
+* Mouse input
+* Clipboard integration
+* Event processing
+* Basic rendering
+
+FreeType should be responsible for font loading and glyph rasterization.
+
+Avoid introducing additional dependencies unless there is a strong technical reason.
+
+---
+
+# 2. Target Platform
+
+The initial target is:
+
+* Linux
+* X11 and/or Wayland through SDL3
+* x86_64
+* Desktop environment
+
+The application must work correctly when the user resizes the window.
+
+The UI should adapt dynamically to the available window dimensions.
+
+---
+
+# 3. Application Philosophy
+
+FastNote is intentionally NOT a full-featured IDE or Notepad++ replacement.
+
+It is a minimal text editor.
+
+The first version should focus on:
+
+* Opening files
+* Editing text
+* Creating documents
+* Saving files
+* Saving files under a new name
+* Basic clipboard operations
+* Basic navigation
+* Adjustable font size
+
+Do not implement syntax highlighting.
+
+Do not implement plugins.
+
+Do not implement tabs.
+
+Do not implement autocomplete.
+
+Do not implement code intelligence.
+
+Do not implement a project system.
+
+Do not implement a complex settings system.
+
+Do not add functionality simply because other text editors have it.
+
+---
+
+# 4. Initial UI
+
+The default interface should look approximately like:
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│ File   Edit   View                              14 px   │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ Hello world                                             │
+│                                                         │
+│ This is FastNote.                                       │
+│                                                         │
+│                                                         │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│ Ln 3, Col 12                              UTF-8          │
+└─────────────────────────────────────────────────────────┘
+```
+
+Keep the interface visually minimal.
+
+Avoid unnecessary icons, gradients, animations, shadows, rounded cards, or decorative elements.
+
+The editor should feel like a native lightweight Linux utility.
+
+---
+
+# 5. Color Palette
+
+Use a very small color palette.
+
+Default dark theme:
+
+```text
+Background: #1E1E1E
+Foreground: #D4D4D4
+Cursor:     #FFFFFF
+Selection:  #404040
+Menu:       #252525
+Border:     #303030
+Status bar: #252525
+```
+
+Do not introduce a complex theming engine.
+
+The colors should be centralized in one structure so they can easily be changed later.
+
+Example:
+
+```c
+typedef struct {
+    SDL_Color background;
+    SDL_Color foreground;
+    SDL_Color cursor;
+    SDL_Color selection;
+    SDL_Color menu;
+    SDL_Color border;
+    SDL_Color status_bar;
+} Theme;
+```
+
+---
+
+# 6. Window
+
+Create a resizable SDL3 window.
+
+Initial size:
+
+```text
+1152 × 648
+```
+
+The application must support arbitrary resizing.
+
+The editor area must automatically recalculate:
+
+* Number of visible lines
+* Number of visible columns
+* Scroll limits
+* Cursor visibility
+* Status bar position
+* Menu dimensions
+
+Do not assume a fixed resolution.
+
+---
+
+# 7. Font
+
+Use FreeType.
+
+Default font size:
+
+```text
+14 px
+```
+
+Allow the user to change the font size.
+
+Suggested range:
+
+```text
+8 px → 48 px
+```
+
+Keyboard shortcuts:
+
+```text
+Ctrl + Plus     Increase font size
+Ctrl + Minus    Decrease font size
+Ctrl + 0        Reset font size to 14 px
+```
+
+The font size must be configurable at runtime.
+
+Do not reload the font for every glyph.
+
+Load the font once and maintain an efficient glyph cache.
+
+---
+
+# 8. Glyph Rendering
+
+Implement a glyph cache.
+
+Do NOT rasterize the same glyph repeatedly.
+
+Conceptually:
+
+```c
+typedef struct {
+    uint32_t codepoint;
+    SDL_Texture *texture;
+    int width;
+    int height;
+    int bearing_x;
+    int bearing_y;
+    int advance_x;
+} Glyph;
+```
+
+The cache should contain glyphs that have already been rasterized.
+
+When a glyph is needed:
+
+```text
+Glyph requested
+      │
+      ├── cached → use existing texture
+      │
+      └── missing → FreeType rasterization → cache
+```
+
+Only render visible text.
+
+Do not render lines outside the visible viewport.
+
+---
+
+# 9. Text Buffer
+
+Create a dedicated text buffer abstraction.
+
+Initial implementation can use a contiguous dynamically allocated buffer:
+
+```c
+typedef struct {
+    char *data;
+    size_t length;
+    size_t capacity;
+} TextBuffer;
+```
+
+Required operations:
+
+```text
+insert
+delete
+append
+clear
+load
+save
+```
+
+Use efficient capacity growth.
+
+Do not realloc the buffer for every typed character.
+
+Use exponential growth such as:
+
+```text
+new_capacity = old_capacity * 2
+```
+
+or another reasonable strategy.
+
+---
+
+# 10. Text Encoding
+
+The initial implementation should use UTF-8.
+
+Files should be treated as UTF-8 text.
+
+Do not implement automatic encoding detection in V1.
+
+If a file contains invalid UTF-8, handle it gracefully instead of crashing.
+
+The editor should never crash because of malformed input.
+
+---
+
+# 11. Cursor
+
+Maintain a logical cursor position.
+
+For example:
+
+```c
+typedef struct {
+    size_t offset;
+    size_t line;
+    size_t column;
+} Cursor;
+```
+
+The cursor must support:
+
+* Left
+* Right
+* Up
+* Down
+* Home
+* End
+* Page Up
+* Page Down
+* Ctrl+Left
+* Ctrl+Right
+* Ctrl+Home
+* Ctrl+End
+
+The cursor must remain visible when navigating.
+
+If the user moves beyond the current viewport, automatically scroll the editor.
+
+---
+
+# 12. Keyboard Input
+
+Implement normal text input using SDL3 text input events.
+
+Do not rely exclusively on raw key events for character insertion.
+
+Distinguish between:
+
+```text
+physical key events
+```
+
+and
+
+```text
+text input events
+```
+
+This is important for:
+
+* UTF-8
+* keyboard layouts
+* accented characters
+* international keyboards
+
+The editor must support normal Linux keyboard layouts.
+
+---
+
+# 13. Selection
+
+Implement basic text selection.
+
+Required:
+
+```text
+Shift + Arrow
+Shift + Home
+Shift + End
+Ctrl + A
+```
+
+Mouse selection should also be supported.
+
+Selection should be visually rendered using the selection color.
+
+Clipboard operations:
+
+```text
+Ctrl + C
+Ctrl + X
+Ctrl + V
+```
+
+Use SDL3 clipboard functionality where appropriate.
+
+---
+
+# 14. Mouse
+
+Support:
+
+* Mouse click to position cursor
+* Mouse drag to select text
+* Mouse wheel scrolling
+* Basic interaction with menus
+* Window resizing through SDL
+
+Do not implement complex mouse interactions.
+
+---
+
+# 15. Scrolling
+
+The editor must support vertical scrolling.
+
+Horizontal scrolling is optional for V1 but the architecture should not prevent adding it later.
+
+Only visible lines should be rendered.
+
+For example, if the document contains:
+
+```text
+100,000 lines
+```
+
+and the window displays:
+
+```text
+40 lines
+```
+
+the renderer should primarily process those approximately 40 visible lines.
+
+Do not render the entire document every frame.
+
+---
+
+# 16. Rendering Architecture
+
+Separate rendering from document management.
+
+Suggested architecture:
+
+```text
+Application
+│
+├── Window
+│
+├── Renderer
+│
+├── TextBuffer
+│
+├── Cursor
+│
+├── Selection
+│
+├── Font
+│
+├── GlyphCache
+│
+├── Input
+│
+├── FileManager
+│
+├── Clipboard
+│
+├── Menu
+│
+└── StatusBar
+```
+
+Suggested source structure:
+
+```text
+src/
+├── main.c
+├── app.c
+├── app.h
+├── window.c
+├── window.h
+├── editor.c
+├── editor.h
+├── text_buffer.c
+├── text_buffer.h
+├── renderer.c
+├── renderer.h
+├── font.c
+├── font.h
+├── glyph_cache.c
+├── glyph_cache.h
+├── input.c
+├── input.h
+├── file_manager.c
+├── file_manager.h
+├── clipboard.c
+├── clipboard.h
+├── menu.c
+├── menu.h
+├── status_bar.c
+├── status_bar.h
+├── theme.c
+├── theme.h
+└── utils.c
+```
+
+Do not create files merely for the sake of having more files.
+
+Keep related functionality together.
+
+---
+
+# 17. Main Loop
+
+The main loop must be event-driven.
+
+Do not run the application at an unnecessarily high fixed FPS while idle.
+
+Conceptually:
+
+```text
+while application_running:
+
+    process_events()
+
+    if state_changed:
+        render()
+
+    wait_for_events_or_frame()
+```
+
+The application should consume very little CPU while the user is not interacting with it.
+
+However, cursor blinking should continue normally.
+
+A reasonable cursor blink interval is approximately:
+
+```text
+500 ms
+```
+
+Do not busy-wait.
+
+Do not use:
+
+```c
+while (true) {
+    render();
+}
+```
+
+with no throttling.
+
+Use SDL's event/wait functionality appropriately.
+
+---
+
+# 18. File Operations
+
+Implement:
+
+### New
+
+Create an empty document.
+
+If the current document has unsaved modifications, ask whether to:
+
+```text
+Save
+Discard
+Cancel
+```
+
+### Open
+
+Open a file selected by the user.
+
+### Save
+
+Save the current document.
+
+### Save As
+
+Allow selecting a new filename.
+
+### Exit
+
+If unsaved changes exist:
+
+```text
+Save
+Discard
+Cancel
+```
+
+---
+
+# 19. File Dialogs
+
+Do not introduce a large GUI framework merely to implement file dialogs.
+
+Prefer SDL-compatible/native Linux mechanisms with minimal dependencies.
+
+If SDL3 provides suitable functionality, use it.
+
+If not, isolate file-dialog functionality behind:
+
+```c
+FileDialog
+```
+
+so that the implementation can be replaced later.
+
+The rest of the application must not depend directly on the dialog implementation.
+
+---
+
+# 20. Modified State
+
+Track whether the document has unsaved changes.
+
+Example:
+
+```c
+bool modified;
+```
+
+The window title should indicate the modified state.
+
+Example:
+
+```text
+FastNote - document.txt
+```
+
+and:
+
+```text
+FastNote - document.txt *
+```
+
+for modified documents.
+
+---
+
+# 21. Menu
+
+Implement a minimal menu.
+
+### File
+
+```text
+New
+Open
+Save
+Save As
+Exit
+```
+
+### Edit
+
+```text
+Undo
+Redo
+Cut
+Copy
+Paste
+Select All
+```
+
+Undo/Redo can initially be implemented with a simple history mechanism.
+
+If implementing Undo/Redo significantly complicates the first milestone, isolate it behind an editor API and implement it immediately after the basic editing functionality.
+
+### View
+
+```text
+Increase Font Size
+Decrease Font Size
+Reset Font Size
+```
+
+Do not create a complex menu system.
+
+---
+
+# 22. Status Bar
+
+Display:
+
+```text
+Ln X, Col Y
+```
+
+and:
+
+```text
+UTF-8
+```
+
+Optionally display:
+
+```text
+Modified
+```
+
+The status bar should consume very little space.
+
+---
+
+# 23. Performance Requirements
+
+Performance is a primary feature.
+
+Follow these rules:
+
+### Startup
+
+Avoid expensive initialization.
+
+Do not:
+
+* scan the filesystem
+* load unnecessary resources
+* initialize unused subsystems
+* preload thousands of glyphs
+
+Only initialize what is required.
+
+### Rendering
+
+Only render visible text.
+
+### Memory
+
+Avoid unnecessary copies of the document.
+
+Avoid temporary allocations inside the rendering loop.
+
+Avoid allocating memory for every character.
+
+### Input
+
+Keyboard input must feel immediate.
+
+### Idle CPU
+
+CPU consumption should be close to zero when the application is idle, except during cursor blinking or necessary OS/UI events.
+
+### File loading
+
+Use efficient buffered file I/O.
+
+For large files, avoid repeatedly reallocating memory.
+
+---
+
+# 24. Error Handling
+
+Never crash on normal user errors.
+
+Examples:
+
+* File does not exist
+* Permission denied
+* File cannot be saved
+* Invalid UTF-8
+* Out-of-memory condition
+* Font cannot be loaded
+* SDL initialization failure
+
+Errors should be reported cleanly.
+
+Use stderr/logging for developer diagnostics.
+
+Do not spam stdout/stderr during normal operation.
+
+---
+
+# 25. Build System
+
+Use CMake.
+
+Target:
+
+```text
+fastnote
+```
+
+Provide:
+
+```text
+CMakeLists.txt
+README.md
+```
+
+The build should be straightforward:
+
+```bash
+cmake -S . -B build
+cmake --build build -j
+```
+
+The final executable should be:
+
+```text
+build/fastnote
+```
+
+Use compiler warnings.
+
+Recommended:
+
+```text
+-Wall
+-Wextra
+-Wpedantic
+-Wconversion
+-Wshadow
+```
+
+Do not blindly disable warnings.
+
+---
+
+# 26. Code Quality
+
+Use modern C17 practices while keeping the implementation simple.
+
+Requirements:
+
+* No global mutable state unless genuinely necessary.
+* Clear ownership of allocated memory.
+* Every allocation must have a clear owner.
+* Every resource must have a cleanup path.
+* Avoid hidden side effects.
+* Avoid unnecessary abstractions.
+* Prefer simple structs and functions.
+* Keep functions reasonably small.
+* Document non-obvious performance decisions.
+
+The code should be easy for another C developer to understand.
+
+---
+
+# 27. Memory Safety
+
+Pay particular attention to:
+
+* buffer boundaries
+* UTF-8 boundaries
+* cursor offsets
+* selection offsets
+* realloc failures
+* SDL resource destruction
+* FreeType resource destruction
+* file handles
+* clipboard data
+
+The application must not have obvious memory leaks.
+
+Test using tools such as:
+
+```bash
+valgrind
+```
+
+when available.
+
+Also use sanitizers during development:
+
+```text
+-fsanitize=address
+-fsanitize=undefined
+```
+
+---
+
+# 28. Performance Testing
+
+Create a simple performance test plan.
+
+Test at least:
+
+### Empty document
+
+Measure:
+
+* startup
+* idle CPU
+* memory
+
+### Small document
+
+Approximately:
+
+```text
+1 KB
+```
+
+### Medium document
+
+Approximately:
+
+```text
+1 MB
+```
+
+### Large document
+
+Approximately:
+
+```text
+10 MB
+```
+
+### Very large document
+
+Approximately:
+
+```text
+100 MB
+```
+
+The application does not necessarily need to fully optimize 100 MB files in V1, but it must fail gracefully and not become catastrophically slow during basic operations.
+
+---
+
+# 29. Development Milestones
+
+Implement incrementally.
+
+## Milestone 1 — Window
+
+Implement:
+
+* CMake
+* SDL3 initialization
+* Window
+* Renderer
+* Resize handling
+* Main loop
+* Clean shutdown
+
+Deliverable:
+
+A completely empty FastNote window.
+
+---
+
+## Milestone 2 — Text Rendering
+
+Implement:
+
+* FreeType
+* Font loading
+* Glyph rasterization
+* Glyph cache
+* Text rendering
+* Font size
+
+Deliverable:
+
+Render a static text document efficiently.
+
+---
+
+## Milestone 3 — Text Buffer
+
+Implement:
+
+* TextBuffer
+* Insert
+* Delete
+* Clear
+* Cursor
+* Basic keyboard navigation
+
+Deliverable:
+
+User can type and edit text.
+
+---
+
+## Milestone 4 — Selection and Clipboard
+
+Implement:
+
+* Selection
+* Shift navigation
+* Mouse selection
+* Copy
+* Cut
+* Paste
+* Select All
+
+Deliverable:
+
+Basic editor usability.
+
+---
+
+## Milestone 5 — File Management
+
+Implement:
+
+* New
+* Open
+* Save
+* Save As
+* Modified state
+* Unsaved changes confirmation
+
+Deliverable:
+
+Usable text editor.
+
+---
+
+## Milestone 6 — UI
+
+Implement:
+
+* Menu
+* Status bar
+* Font-size controls
+* Window title
+* Dark theme
+
+Deliverable:
+
+Complete minimal FastNote V1.
+
+---
+
+## Milestone 7 — Optimization
+
+Profile the application.
+
+Investigate:
+
+* startup time
+* memory allocations
+* rendering time
+* idle CPU
+* typing latency
+* large-file behavior
+
+Optimize only where profiling shows a real bottleneck.
+
+Do not perform speculative micro-optimizations that make the code significantly harder to maintain.
+
+---
+
+# 30. Important Constraints
+
+Do not turn this project into a framework.
+
+Do not implement functionality that was not requested.
+
+Do not add dependencies without justification.
+
+Do not add syntax highlighting.
+
+Do not add language detection.
+
+Do not add tabs.
+
+Do not add plugins.
+
+Do not add autocomplete.
+
+Do not add cloud functionality.
+
+Do not add telemetry.
+
+Do not add analytics.
+
+Do not add networking.
+
+Do not add an updater.
+
+Do not add unnecessary animations.
+
+Do not add unnecessary configuration files.
+
+The application should remain a small Linux executable.
+
+---
+
+# 31. Definition of Done
+
+FastNote V1 is complete when the user can:
+
+1. Launch FastNote.
+2. See the editor window immediately.
+3. Type UTF-8 text.
+4. Navigate using the keyboard.
+5. Select text.
+6. Copy/cut/paste text.
+7. Create a new document.
+8. Open a file.
+9. Edit the file.
+10. Save the file.
+11. Save the file under a different name.
+12. Resize the window.
+13. Scroll through the document.
+14. Change the font size.
+15. Close the application.
+16. Receive a save confirmation when necessary.
+
+The application must:
+
+* remain responsive,
+* not crash during normal operation,
+* use very little CPU while idle,
+* avoid unnecessary memory allocations,
+* render only visible text,
+* clean up all resources correctly.
+
+---
+
+# 32. Final Engineering Principle
+
+When choosing between two valid implementations, prefer:
+
+```text
+simpler
+      +
+fewer dependencies
+      +
+less memory
+      +
+less CPU
+      +
+lower latency
+```
+
+over:
+
+```text
+more features
+      +
+more abstractions
+      +
+more dependencies
+```
+
+FastNote should feel like a small native Linux utility rather than a web application or a heavyweight desktop application.
+
+Before implementing a feature, ask:
+
+> "Does this directly contribute to the minimal text-editor experience or its performance?"
+
+If the answer is no, do not implement it.
+
+Start with Milestone 1 and proceed incrementally. After each milestone, build the application, verify that it works, and only then proceed to the next milestone.
