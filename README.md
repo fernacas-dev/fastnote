@@ -44,6 +44,30 @@ cmake -S . -B build-asan -DFASTNOTE_SANITIZERS=ON
 cmake --build build-asan -j
 ```
 
+## Release
+
+```bash
+scripts/release.sh
+```
+
+Fresh Release configure + build, full test suite, stripped binary, a 3 s
+headless smoke test, then `build-release/fastnote-<ver>-linux-<arch>.tar.gz`
+(binary + README + `.desktop`) with a `.sha256` checksum. Target systems
+need the SDL3 and FreeType runtime libraries (`libsdl3-0`, `libfreetype6`
+on Debian/Ubuntu).
+
+## Install
+
+```bash
+scripts/install.sh            # user install (~/.local)
+scripts/install.sh --system   # system install (sudo)
+scripts/install.sh --no-mime  # skip default-app registration
+```
+
+Installs the binary, the `.desktop` launcher and registers FastNote as the
+default for text/code MIME types. If no tarball exists, a release is built
+first.
+
 Compiler warnings: `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`.
 
 ## Usage

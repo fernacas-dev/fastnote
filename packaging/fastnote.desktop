@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=FastNote
+Comment=Minimal, fast Linux text editor
+Exec=fastnote %F
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/x-chdr;text/x-csrc;text/x-c++src;text/x-java;text/x-python;text/x-shellscript;text/html;text/css;text/javascript;text/markdown;text/x-rust;text/x-go;
+StartupWMClass=FastNote
