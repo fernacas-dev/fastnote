@@ -36,7 +36,7 @@ static void update_window_sizes(App *app) {
 }
 
 static size_t visible_lines(const App *app) {
-    int h = app->win_h - app->m.menu_h - app->m.status_h;
+    int h = app->win_h - app->m.menu_h - app->m.tab_h - app->m.status_h;
     if (h <= 0 || app->font.line_h <= 0)
         return 1;
     size_t v = (size_t)(h / app->font.line_h);
@@ -48,7 +48,7 @@ static float editor_area_x(App *app) {
     if (app->project.has && app->project.visible)
         x += (float)app->m.sidebar_w;
     // Line-number gutter (cache lookups only; digits rarely change).
-    x += (float)ui_gutter_w(&app->font, &app->m, app->ed.buf.nlines);
+    x += (float)ui_gutter_w(&app->font, &app->m, app->tabs[app->cur].buf.nlines);
     return x;
 }
 
@@ -61,13 +61,13 @@ static float editor_area_w(App *app) {
 static void update_title(App *app) {
     char title[1152];
     const char *name = "Untitled";
-    if (app->ed.has_path) {
-        const char *slash = strrchr(app->ed.path, '/');
-        name = slash ? slash + 1 : app->ed.path;
+    if (app->tabs[app->cur].has_path) {
+        const char *slash = strrchr(app->tabs[app->cur].path, '/');
+        name = slash ? slash + 1 : app->tabs[app->cur].path;
         if (!name[0])
             name = "Untitled";
     }
-    if (app->ed.modified)
+    if (app->tabs[app->cur].modified)
         snprintf(title, sizeof(title), "FastNote - %s *", name);
     else
         snprintf(title, sizeof(title), "FastNote - %s", name);
@@ -79,31 +79,32 @@ static void update_title(App *app) {
 // coordinates here, so convert back from framebuffer pixels).
 static void reveal_cursor(App *app) {
     size_t vis = visible_lines(app);
-    editor_ensure_visible(&app->ed, vis);
+    editor_ensure_visible(&app->tabs[app->cur], vis);
 
     int tab_w = font_tab_width(&app->font, FN_TAB_WIDTH_COLS);
-    size_t line = tb_line_of(&app->ed.buf, app->ed.cursor);
-    size_t ls = tb_line_start(&app->ed.buf, line);
+    size_t line = tb_line_of(&app->tabs[app->cur].buf, app->tabs[app->cur].cursor);
+    size_t ls = tb_line_start(&app->tabs[app->cur].buf, line);
     float w = editor_area_w(app);
-    int lim = app->ed.scroll_x + (w > 0 ? (int)w : 0) + 4096;
+    int lim = app->tabs[app->cur].scroll_x + (w > 0 ? (int)w : 0) + 4096;
     if (lim < 0)
         lim = 0;
-    float cx = (float)font_text_width_max(&app->font, app->ed.buf.data + ls,
-                                          app->ed.cursor - ls, tab_w, lim);
-    if (cx - (float)app->ed.scroll_x < 0)
-        app->ed.scroll_x = (int)cx - 20 < 0 ? 0 : (int)cx - 20;
-    else if (cx - (float)app->ed.scroll_x > w - 20.0f && w > 40.0f)
-        app->ed.scroll_x = (int)(cx - (w - 20.0f));
-    if (app->ed.scroll_x < 0)
-        app->ed.scroll_x = 0;
+    float cx = (float)font_text_width_max(&app->font, app->tabs[app->cur].buf.data + ls,
+                                          app->tabs[app->cur].cursor - ls, tab_w, lim);
+    if (cx - (float)app->tabs[app->cur].scroll_x < 0)
+        app->tabs[app->cur].scroll_x = (int)cx - 20 < 0 ? 0 : (int)cx - 20;
+    else if (cx - (float)app->tabs[app->cur].scroll_x > w - 20.0f && w > 40.0f)
+        app->tabs[app->cur].scroll_x = (int)(cx - (w - 20.0f));
+    if (app->tabs[app->cur].scroll_x < 0)
+        app->tabs[app->cur].scroll_x = 0;
 
     float isx = app->mouse_sx > 0 ? app->mouse_sx : 1.0f;
     float isy = app->mouse_sy > 0 ? app->mouse_sy : 1.0f;
     SDL_Rect area = {(int)((float)app->m.pad_x / isx),
-                     (int)((float)app->m.menu_h / isy),
+                     (int)(((float)app->m.menu_h + (float)app->m.tab_h) /
+                           isy),
                      (int)(w / isx),
                      (int)((float)(app->win_h - app->m.menu_h -
-                                   app->m.status_h) /
+                                   app->m.tab_h - app->m.status_h) /
                            isy)};
     if (area.w < 1)
         area.w = 1;
@@ -115,9 +116,11 @@ static void reveal_cursor(App *app) {
 
 // Map a mouse point (framebuffer pixels) in the editor area to a buffer offset.
 static size_t offset_at_point(App *app, float x, float y) {
-    Editor *e = &app->ed;
+    Editor *e = &app->tabs[app->cur];
     int tab_w = font_tab_width(&app->font, FN_TAB_WIDTH_COLS);
-    long row = (long)((y - (float)app->m.menu_h) / (float)app->font.line_h);
+    long row =
+        (long)(((float)y - (float)app->m.menu_h - (float)app->m.tab_h) /
+               (float)app->font.line_h);
     if (row < 0)
         row = 0;
     size_t line = e->scroll_line + (size_t)row;
@@ -176,13 +179,13 @@ static void refresh_scale(App *app) {
 // Open path with the unsaved-changes confirm when needed. Shared by the
 // open-file dialog and sidebar clicks.
 static void request_open_path(App *app, const char *path) {
-    if (app->ed.modified) {
+    if (app->tabs[app->cur].modified) {
         snprintf(app->pending_path, sizeof(app->pending_path), "%s", path);
         app->after = AFTER_OPEN;
         ui_modal_confirm(&app->modal, "This document");
     } else {
         char err[256];
-        if (!editor_load(&app->ed, path, err, sizeof(err))) {
+        if (!editor_load(&app->tabs[app->cur], path, err, sizeof(err))) {
             char msg[512];
             snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
             ui_modal_error(&app->modal, msg);
@@ -192,31 +195,128 @@ static void request_open_path(App *app, const char *path) {
     }
 }
 
+// --- Tabs (one Editor per open document) ---
+
+static bool tabs_grow(App *app) {
+    if (app->ntabs < app->tabs_cap)
+        return true;
+    size_t ncap = app->tabs_cap ? app->tabs_cap * 2 : 4;
+    Editor *nt = realloc(app->tabs, ncap * sizeof(Editor));
+    if (!nt)
+        return false;
+    app->tabs = nt;
+    app->tabs_cap = ncap;
+    return true;
+}
+
+// The current tab can take a fresh document without opening a new tab.
+static bool cur_reusable(const App *app) {
+    if (app->ntabs == 0)
+        return false;
+    const Editor *e = &app->tabs[app->cur];
+    return !e->has_path && !e->modified && e->buf.len == 0;
+}
+
+static void switch_tab(App *app, size_t i) {
+    if (i >= app->ntabs)
+        return;
+    app->cur = i;
+    update_title(app);
+    reveal_cursor(app);
+}
+
+// Drop the current tab. The last tab resets in place (never zero tabs).
+static void close_cur_tab(App *app) {
+    if (app->ntabs == 0)
+        return;
+    if (app->ntabs == 1) {
+        editor_new(&app->tabs[app->cur]);
+    } else {
+        editor_quit(&app->tabs[app->cur]);
+        memmove(&app->tabs[app->cur], &app->tabs[app->cur + 1],
+                (app->ntabs - app->cur - 1) * sizeof(Editor));
+        app->ntabs--;
+        if (app->cur >= app->ntabs)
+            app->cur = app->ntabs - 1;
+    }
+    update_title(app);
+    reveal_cursor(app);
+}
+
+// Tab index that should receive an opened file: reuse an empty untitled
+// tab, else append a fresh one (falling back to current on OOM).
+static size_t target_tab_for_open(App *app) {
+    if (cur_reusable(app))
+        return app->cur;
+    if (tabs_grow(app) && editor_init(&app->tabs[app->ntabs])) {
+        app->cur = app->ntabs;
+        app->ntabs++;
+        return app->cur;
+    }
+    return app->cur;
+}
+
+// Exit flow: confirm unsaved tabs one by one, then quit.
+static void continue_exit(App *app) {
+    for (size_t i = 0; i < app->ntabs; i++) {
+        if (app->tabs[i].modified) {
+            app->cur = i;
+            app->after = AFTER_EXIT;
+            ui_modal_confirm(&app->modal, "This document");
+            update_title(app);
+            reveal_cursor(app);
+            return;
+        }
+    }
+    app->exit_mode = false;
+    app->running = false;
+}
+
+// Close button / Ctrl+W on tab i: focus it, confirm only if modified.
+static void request_close_tab(App *app, size_t i) {
+    if (i >= app->ntabs)
+        return;
+    app->cur = i;
+    if (app->tabs[app->cur].modified) {
+        app->after = AFTER_CLOSE;
+        ui_modal_confirm(&app->modal, "This document");
+        update_title(app);
+        reveal_cursor(app);
+    } else {
+        close_cur_tab(app);
+    }
+}
+
 // --- File actions ---
 
 static void run_after(App *app) {
     AfterAction a = app->after;
     app->after = AFTER_NONE;
     if (a == AFTER_NEW) {
-        editor_new(&app->ed);
+        editor_new(&app->tabs[app->cur]);
     } else if (a == AFTER_OPEN) {
         char err[256];
-        if (!editor_load(&app->ed, app->pending_path, err, sizeof(err))) {
+        if (!editor_load(&app->tabs[app->cur], app->pending_path, err, sizeof(err))) {
             char msg[512];
             snprintf(msg, sizeof(msg), "Could not open file:\n%s", err);
             ui_modal_error(&app->modal, msg);
         }
     } else if (a == AFTER_EXIT) {
-        app->running = false;
+        if (app->exit_mode)
+            continue_exit(app); // next unsaved tab, or quit
+        else
+            app->running = false;
+    } else if (a == AFTER_CLOSE) {
+        close_cur_tab(app);
     }
     update_title(app);
     reveal_cursor(app);
 }
 
 static void do_save(App *app) {
-    if (app->ed.has_path) {
+    if (app->tabs[app->cur].has_path) {
         char err[256];
-        if (!editor_save(&app->ed, err, sizeof(err))) {
+        if (!editor_save(&app->tabs[app->cur], err, sizeof(err))) {
             char msg[512];
             snprintf(msg, sizeof(msg), "Could not save file:\n%s", err);
             ui_modal_error(&app->modal, msg);
@@ -238,13 +338,21 @@ static void do_save(App *app) {
 }
 
 static void request_new(App *app) {
-    if (app->ed.modified) {
+    if (app->tabs[app->cur].modified) {
         app->after = AFTER_NEW;
         ui_modal_confirm(&app->modal, "This document");
-    } else {
-        editor_new(&app->ed);
+    } else if (cur_reusable(app)) {
+        editor_new(&app->tabs[app->cur]);
         update_title(app);
         reveal_cursor(app);
+    } else if (tabs_grow(app) && editor_init(&app->tabs[app->ntabs])) {
+        app->cur = app->ntabs;
+        app->ntabs++;
+        update_title(app);
+        reveal_cursor(app);
+    } else {
+        ui_modal_error(&app->modal, "Out of memory");
+        app_mark_dirty(app);
     }
 }
 
@@ -256,12 +364,8 @@ static void request_open_dialog(App *app) {
 }
 
 static void request_exit(App *app) {
-    if (app->ed.modified) {
-        app->after = AFTER_EXIT;
-        ui_modal_confirm(&app->modal, "This document");
-    } else {
-        app->running = false;
-    }
+    app->exit_mode = true;
+    continue_exit(app);
 }
 
 static void apply_font_size(App *app) {
@@ -300,20 +404,31 @@ static void do_action(App *app, MenuAction a) {
     case ACT_EXIT:
         request_exit(app);
         break;
+    case ACT_CLOSE_TAB:
+        request_close_tab(app, app->cur);
+        break;
+    case ACT_TAB_NEXT:
+        if (app->ntabs > 0)
+            switch_tab(app, (app->cur + 1) % app->ntabs);
+        break;
+    case ACT_TAB_PREV:
+        if (app->ntabs > 0)
+            switch_tab(app, (app->cur + app->ntabs - 1) % app->ntabs);
+        break;
     case ACT_UNDO:
-        if (editor_undo(&app->ed)) {
+        if (editor_undo(&app->tabs[app->cur])) {
             update_title(app);
             reveal_cursor(app);
         }
         break;
     case ACT_REDO:
-        if (editor_redo(&app->ed)) {
+        if (editor_redo(&app->tabs[app->cur])) {
             update_title(app);
             reveal_cursor(app);
         }
         break;
     case ACT_COPY: {
-        char *s = editor_selection_text(&app->ed);
+        char *s = editor_selection_text(&app->tabs[app->cur]);
         if (s) {
             SDL_SetClipboardText(s);
             free(s);
@@ -321,11 +436,11 @@ static void do_action(App *app, MenuAction a) {
         break;
     }
     case ACT_CUT: {
-        char *s = editor_selection_text(&app->ed);
+        char *s = editor_selection_text(&app->tabs[app->cur]);
         if (s) {
             SDL_SetClipboardText(s);
             free(s);
-            editor_delete_selection(&app->ed);
+            editor_delete_selection(&app->tabs[app->cur]);
             update_title(app);
             reveal_cursor(app);
         }
@@ -335,7 +450,7 @@ static void do_action(App *app, MenuAction a) {
         if (SDL_HasClipboardText()) {
             char *t = SDL_GetClipboardText();
             if (t) {
-                editor_insert(&app->ed, t, strlen(t));
+                editor_insert(&app->tabs[app->cur], t, strlen(t));
                 SDL_free(t);
                 update_title(app);
                 reveal_cursor(app);
@@ -343,7 +458,7 @@ static void do_action(App *app, MenuAction a) {
         }
         break;
     case ACT_SELECT_ALL:
-        editor_select_all(&app->ed);
+        editor_select_all(&app->tabs[app->cur]);
         reveal_cursor(app);
         break;
     case ACT_TOGGLE_SIDEBAR:
@@ -353,7 +468,7 @@ static void do_action(App *app, MenuAction a) {
         }
         break;
     case ACT_TOGGLE_HL:
-        app->ed.hl_on = !app->ed.hl_on;
+        app->tabs[app->cur].hl_on = !app->tabs[app->cur].hl_on;
         app_mark_dirty(app);
         break;
     case ACT_FONT_INC:
@@ -387,13 +502,14 @@ static void handle_modal_button(App *app, ModalButton b) {
     }
     if (b == MB_SAVE) {
         do_save(app); // closes modal itself when a dialog is needed
-        if (app->ed.has_path)
+        if (app->tabs[app->cur].has_path)
             ui_modal_close(&app->modal);
     } else if (b == MB_DISCARD) {
         ui_modal_close(&app->modal);
         run_after(app);
     } else { // MB_CANCEL
         app->after = AFTER_NONE;
+        app->exit_mode = false;
         ui_modal_close(&app->modal);
         app_mark_dirty(app);
     }
@@ -417,7 +533,7 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
     } else if (res->is_save) {
         if (res->path) {
             char err[256];
-            if (!editor_save_as(&app->ed, res->path, err, sizeof(err))) {
+            if (!editor_save_as(&app->tabs[app->cur], res->path, err, sizeof(err))) {
                 char msg[512];
                 snprintf(msg, sizeof(msg), "Could not save file:\n%s", err);
                 ui_modal_error(&app->modal, msg);
@@ -426,7 +542,7 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
                 // A confirm-save requested this dialog; continue.
                 AfterAction keep = app->after;
                 if (keep == AFTER_NEW || keep == AFTER_EXIT ||
-                    keep == AFTER_OPEN)
+                    keep == AFTER_OPEN || keep == AFTER_CLOSE)
                     run_after(app);
                 else
                     app->after = AFTER_NONE;
@@ -440,6 +556,8 @@ static void handle_dialog_result(App *app, FileDialogResult *res) {
             app->after = AFTER_NONE;
         }
     } else if (res->path) {
+        // Opened files land in a fresh tab (reusing an empty one).
+        app->cur = target_tab_for_open(app);
         request_open_path(app, res->path);
     }
     free(res->path);
@@ -465,7 +583,7 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         if (menu_was_open)
             ui_menu_close(&app->menu);
         else
-            editor_clear_selection(&app->ed);
+            editor_clear_selection(&app->tabs[app->cur]);
         app_mark_dirty(app);
         return;
     }
@@ -489,6 +607,8 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         case SDLK_X: a = ACT_CUT; break;
         case SDLK_V: a = ACT_PASTE; break;
         case SDLK_B: a = ACT_TOGGLE_SIDEBAR; break;
+        case SDLK_W: a = ACT_CLOSE_TAB; break;
+        case SDLK_TAB: a = shift ? ACT_TAB_PREV : ACT_TAB_NEXT; break;
         case SDLK_PLUS:
         case SDLK_EQUALS:
         case SDLK_KP_PLUS: a = ACT_FONT_INC; break;
@@ -508,7 +628,7 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         // text input (see SDL_EVENT_TEXT_INPUT handling).
     }
 
-    Editor *e = &app->ed;
+    Editor *e = &app->tabs[app->cur];
     switch (key) {
     case SDLK_LEFT:
         if (ctrl)
@@ -572,7 +692,7 @@ static void on_key_down(App *app, const SDL_KeyboardEvent *k) {
         break;
     case SDLK_TAB:
         if (!ctrl) {
-            editor_tab(e);
+            editor_tab(&app->tabs[app->cur]);
             update_title(app);
             reveal_cursor(app);
         }
@@ -614,16 +734,38 @@ static void on_mouse_down(App *app, const SDL_MouseButtonEvent *b) {
         if (pc == PCK_FILE && rel) {
             char full[2048];
             snprintf(full, sizeof(full), "%s/%s", app->project.root, rel);
+            // Sidebar opens into a fresh tab (reusing an empty one).
+            app->cur = target_tab_for_open(app);
             request_open_path(app, full);
         }
         app_mark_dirty(app);
         return;
     }
+    // Tab strip clicks (below the menu bar, right of the sidebar).
+    {
+        float strip_y = (float)app->m.menu_h;
+        float sx0 = (app->project.has && app->project.visible)
+                        ? (float)app->m.sidebar_w
+                        : 0.0f;
+        if (y >= strip_y && y < strip_y + (float)app->m.tab_h && x >= sx0) {
+            int idx = -1;
+            TabClick tc = ui_tab_click(
+                &app->m, app->tabs, (int)app->ntabs, sx0, strip_y,
+                (float)app->win_w, x, y, &idx);
+            if (tc == TABACT_SWITCH)
+                switch_tab(app, (size_t)idx);
+            else if (tc == TABACT_CLOSE)
+                request_close_tab(app, (size_t)idx);
+            else
+                app_mark_dirty(app);
+            return;
+        }
+    }
     // Clicks on the line-number gutter are ignored.
     if (x < editor_area_x(app))
         return;
     size_t at = offset_at_point(app, x, y);
-    editor_set_cursor(&app->ed, at, false);
+    editor_set_cursor(&app->tabs[app->cur], at, false);
     app->dragging = true;
     reveal_cursor(app);
 }
@@ -634,7 +776,7 @@ static void on_mouse_motion(App *app, const SDL_MouseMotionEvent *mo) {
     float x = fb_x(app, mo->x), y = fb_y(app, mo->y);
     if (app->dragging) {
         size_t at = offset_at_point(app, x, y);
-        editor_set_cursor(&app->ed, at, true);
+        editor_set_cursor(&app->tabs[app->cur], at, true);
         reveal_cursor(app);
         return;
     }
@@ -657,14 +799,14 @@ static void on_wheel(App *app, const SDL_MouseWheelEvent *w) {
         return;
     }
     if ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
-        app->ed.scroll_x -= (int)(w->y * 40.0f * app->display_scale);
-        editor_clamp_scroll(&app->ed, visible_lines(app));
+        app->tabs[app->cur].scroll_x -= (int)(w->y * 40.0f * app->display_scale);
+        editor_clamp_scroll(&app->tabs[app->cur], visible_lines(app));
     } else {
-        long sl = (long)app->ed.scroll_line - (long)(w->y * FN_WHEEL_LINES);
+        long sl = (long)app->tabs[app->cur].scroll_line - (long)(w->y * FN_WHEEL_LINES);
         if (sl < 0)
             sl = 0;
-        app->ed.scroll_line = (size_t)sl;
-        editor_clamp_scroll(&app->ed, visible_lines(app));
+        app->tabs[app->cur].scroll_line = (size_t)sl;
+        editor_clamp_scroll(&app->tabs[app->cur], visible_lines(app));
     }
     app_mark_dirty(app);
 }
@@ -732,22 +874,29 @@ bool app_init(App *app, const char *open_path, const char *font_path, char *err,
         SDL_Quit();
         return false;
     }
-    if (!editor_init(&app->ed)) {
+    app->tabs = NULL;
+    app->ntabs = 0;
+    app->tabs_cap = 0;
+    app->cur = 0;
+    if (!tabs_grow(app) || !editor_init(&app->tabs[0])) {
         snprintf(err, errcap, "Out of memory");
+        free(app->tabs);
+        app->tabs = NULL;
         font_quit(&app->font);
         SDL_DestroyRenderer(app->ren);
         SDL_DestroyWindow(app->win);
         SDL_Quit();
         return false;
     }
+    app->ntabs = 1;
     project_init(&app->project);
     if (open_path) {
         char lerr[256];
-        if (!editor_load(&app->ed, open_path, lerr, sizeof(lerr))) {
+        if (!editor_load(&app->tabs[app->cur], open_path, lerr, sizeof(lerr))) {
             // Non-fatal: start with an empty document, remember the name so
             // that Save writes where the user expected.
-            snprintf(app->ed.path, sizeof(app->ed.path), "%s", open_path);
-            app->ed.has_path = true;
+            snprintf(app->tabs[app->cur].path, sizeof(app->tabs[app->cur].path), "%s", open_path);
+            app->tabs[app->cur].has_path = true;
             ui_modal_error(&app->modal, lerr);
         }
     }
@@ -765,7 +914,11 @@ void app_quit(App *app) {
     app->hl_scratch = NULL;
     app->hl_scratch_cap = 0;
     project_quit(&app->project);
-    editor_quit(&app->ed);
+    for (size_t i = 0; i < app->ntabs; i++)
+        editor_quit(&app->tabs[i]);
+    free(app->tabs);
+    app->tabs = NULL;
+    app->ntabs = app->tabs_cap = app->cur = 0;
     font_quit(&app->font);
     if (app->ren)
         SDL_DestroyRenderer(app->ren);
@@ -792,7 +945,7 @@ void app_step(App *app, int timeout_ms) {
                 break;
             case SDL_EVENT_WINDOW_RESIZED:
                 update_window_sizes(app);
-                editor_clamp_scroll(&app->ed, visible_lines(app));
+                editor_clamp_scroll(&app->tabs[app->cur], visible_lines(app));
                 reveal_cursor(app);
                 break;
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
@@ -816,7 +969,7 @@ void app_step(App *app, int timeout_ms) {
                         (mod & SDL_KMOD_CTRL) && !(mod & SDL_KMOD_ALT);
                     if (!pure_ctrl) {
                         ui_menu_close(&app->menu);
-                        editor_insert(&app->ed, ev.text.text,
+                        editor_insert(&app->tabs[app->cur], ev.text.text,
                                       strlen(ev.text.text));
                         update_title(app);
                         reveal_cursor(app);

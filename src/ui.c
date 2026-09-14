@@ -13,12 +13,15 @@ UiMetrics ui_metrics_for(float scale) {
     UiMetrics m;
     m.scale = scale;
     m.menu_h = (int)(FN_MENU_H * scale + 0.5f);
+    m.tab_h = (int)(FN_TAB_H * scale + 0.5f);
     m.status_h = (int)(FN_STATUS_H * scale + 0.5f);
     m.pad_x = (int)(FN_PAD_X * scale + 0.5f);
     m.cursor_w = (int)(FN_CURSOR_W * scale + 0.5f);
     m.sidebar_w = (int)(220.0f * scale + 0.5f);
     if (m.menu_h < 1)
         m.menu_h = 1;
+    if (m.tab_h < 1)
+        m.tab_h = 1;
     if (m.status_h < 1)
         m.status_h = 1;
     if (m.pad_x < 1)
@@ -36,6 +39,7 @@ static const MenuItem file_items[] = {
     {"Open Folder", "", ACT_OPEN_FOLDER},
     {"Save", "Ctrl+S", ACT_SAVE},
     {"Save As", "Ctrl+Shift+S", ACT_SAVE_AS},
+    {"Close Tab", "Ctrl+W", ACT_CLOSE_TAB},
     {"Exit", "Ctrl+Q", ACT_EXIT},
 };
 static const MenuItem edit_items[] = {
@@ -460,3 +464,110 @@ void ui_draw_modal(SDL_Renderer *ren, Font *f, const Theme *th,
         bx -= btn_w + SC(m, 10);
     }
 }
+
+// --- Tab strip ---
+
+// Display name: basename or "Untitled", with " *" when modified.
+static void tab_label(const Editor *e, char *out, size_t cap) {
+    const char *name = "Untitled";
+    if (e->has_path) {
+        const char *s = strrchr(e->path, '/');
+        name = s ? s + 1 : e->path;
+        if (!name[0])
+            name = "Untitled";
+    }
+    if (e->modified)
+        snprintf(out, cap, "%s *", name);
+    else
+        snprintf(out, cap, "%s", name);
+}
+
+// Even split of [x0, win_w), capped so a lone tab doesn't span the window.
+static float tab_w(const UiMetrics *m, int ntabs, float x0, float win_w) {
+    if (ntabs <= 0)
+        return 0;
+    float w = (win_w - x0) / (float)ntabs;
+    float max_w = 220.0f * m->scale;
+    if (w > max_w)
+        w = max_w;
+    return w < 1.0f ? 1.0f : w;
+}
+
+static float tab_close_w(const UiMetrics *m) { return 20.0f * m->scale; }
+
+void ui_draw_tabs(SDL_Renderer *ren, Font *f, const Theme *th,
+                  const UiMetrics *m, const Editor *tabs, int ntabs, int cur,
+                  float x0, float y0, float win_w) {
+    if (ntabs <= 0)
+        return;
+    SDL_Color fg = th->foreground;
+    float w = tab_w(m, ntabs, x0, win_w);
+    float cw = tab_close_w(m);
+    float strip_h = (float)m->tab_h;
+
+    // Strip background + bottom border.
+    SDL_FRect bg = {x0, y0, win_w - x0, strip_h};
+    fill_rect(ren, th->menu, &bg);
+    SDL_SetRenderDrawColor(ren, th->border.r, th->border.g, th->border.b,
+                           th->border.a);
+    SDL_RenderLine(ren, x0, y0 + strip_h, win_w, y0 + strip_h);
+
+    float baseline =
+        y0 + (float)f->asc + (strip_h - (float)f->line_h) / 2.0f;
+    for (int i = 0; i < ntabs; i++) {
+        float tx = x0 + (float)i * w;
+        if (i == cur) {
+            // Active tab blends into the editor below (covers the border).
+            SDL_FRect a = {tx, y0, w, strip_h + 1.0f};
+            fill_rect(ren, th->background, &a);
+        }
+        // Separator.
+        SDL_SetRenderDrawColor(ren, th->border.r, th->border.g, th->border.b,
+                               th->border.a);
+        SDL_RenderLine(ren, tx, y0 + 3.0f * m->scale, tx,
+                       y0 + strip_h - 3.0f * m->scale);
+        // Label clipped to the tab minus the close zone.
+        char label[1152];
+        tab_label(&tabs[i], label, sizeof(label));
+        SDL_Rect clip = {(int)(tx + (float)m->pad_x), (int)y0,
+                         (int)(w - cw - (float)m->pad_x), m->tab_h};
+        if (clip.w > 0) {
+            SDL_SetRenderClipRect(ren, &clip);
+            ui_draw_text(ren, f, label, strlen(label),
+                         tx + (float)m->pad_x, baseline, fg);
+            SDL_SetRenderClipRect(ren, NULL);
+        }
+        // Close × (two lines).
+        float cx = tx + w - cw / 2.0f;
+        float cy = y0 + strip_h / 2.0f;
+        float r = 4.0f * m->scale;
+        SDL_SetRenderDrawColor(ren, fg.r, fg.g, fg.b, fg.a);
+        SDL_RenderLine(ren, cx - r, cy - r, cx + r, cy + r);
+        SDL_RenderLine(ren, cx - r, cy + r, cx + r, cy - r);
+    }
+}
+
+TabClick ui_tab_click(const UiMetrics *m, const Editor *tabs, int ntabs,
+                      float x0, float y0, float win_w, float x, float y,
+                      int *idx) {
+    (void)tabs;
+    if (idx)
+        *idx = -1;
+    if (ntabs <= 0)
+        return TABACT_NONE;
+    if (y < y0 || y >= y0 + (float)m->tab_h || x < x0 || x >= win_w)
+        return TABACT_NONE;
+    float w = tab_w(m, ntabs, x0, win_w);
+    if (w <= 0)
+        return TABACT_NONE;
+    int i = (int)((x - x0) / w);
+    if (i < 0 || i >= ntabs)
+        return TABACT_NONE;
+    if (idx)
+        *idx = i;
+    float tx = x0 + (float)i * w;
+    if (x >= tx + w - tab_close_w(m))
+        return TABACT_CLOSE;
+    return TABACT_SWITCH;
+}
+

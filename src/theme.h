@@ -43,6 +43,7 @@ static inline Theme theme_dark(void) {
 // Layout constants below are 1x base sizes; UiMetrics scales them by the
 // display scale for HiDPI displays (see ui.h).
 #define FN_MENU_H 28
+#define FN_TAB_H 30
 #define FN_STATUS_H 24
 #define FN_PAD_X 8
 #define FN_CURSOR_W 2

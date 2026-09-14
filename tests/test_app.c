@@ -108,43 +108,43 @@ int main(void) {
     // Typing via text-input events (the international-keyboard path).
     push_text("hello");
     steps(&app, 1);
-    CHECK(app.ed.buf.len == 5);
-    CHECK(memcmp(app.ed.buf.data, "hello", 5) == 0);
+    CHECK(app.tabs[app.cur].buf.len == 5);
+    CHECK(memcmp(app.tabs[app.cur].buf.data, "hello", 5) == 0);
 
     // Return key makes a newline; keep typing.
     push_key(SDLK_RETURN, 0);
     push_text("world");
     steps(&app, 2);
-    CHECK(app.ed.buf.nlines == 2);
-    CHECK(app.ed.modified);
+    CHECK(app.tabs[app.cur].buf.nlines == 2);
+    CHECK(app.tabs[app.cur].modified);
 
     // Home/End navigation.
     push_key(SDLK_HOME, 0);
     steps(&app, 1);
-    CHECK(app.ed.cursor == 6);
+    CHECK(app.tabs[app.cur].cursor == 6);
     push_key(SDLK_END, 0);
     steps(&app, 1);
-    CHECK(app.ed.cursor == 11);
+    CHECK(app.tabs[app.cur].cursor == 11);
 
     // Shift+Home selects "world".
     push_key(SDLK_HOME, SDL_KMOD_SHIFT);
     steps(&app, 1);
-    CHECK(editor_has_selection(&app.ed));
-    char *sel = editor_selection_text(&app.ed);
+    CHECK(editor_has_selection(&app.tabs[app.cur]));
+    char *sel = editor_selection_text(&app.tabs[app.cur]);
     CHECK(sel && strcmp(sel, "world") == 0);
     free(sel);
 
     // Ctrl+A selects everything.
     push_key(SDLK_A, SDL_KMOD_CTRL);
     steps(&app, 1);
-    sel = editor_selection_text(&app.ed);
+    sel = editor_selection_text(&app.tabs[app.cur]);
     CHECK(sel && strcmp(sel, "hello\nworld") == 0);
     free(sel);
 
     // Escape clears the selection.
     push_key(SDLK_ESCAPE, 0);
     steps(&app, 1);
-    CHECK(!editor_has_selection(&app.ed));
+    CHECK(!editor_has_selection(&app.tabs[app.cur]));
 
     // Font size shortcuts.
     CHECK(app.font.px == 14);
@@ -158,10 +158,10 @@ int main(void) {
     // Undo removes "world", redo restores it.
     push_key(SDLK_Z, SDL_KMOD_CTRL);
     steps(&app, 1);
-    CHECK(app.ed.buf.nlines == 1);
+    CHECK(app.tabs[app.cur].buf.nlines == 1);
     push_key(SDLK_Y, SDL_KMOD_CTRL);
     steps(&app, 1);
-    CHECK(app.ed.buf.nlines == 2);
+    CHECK(app.tabs[app.cur].buf.nlines == 2);
 
     // Menu: click "File", hover first row, activate it (New on a
     // modified doc -> confirm modal appears).
@@ -180,24 +180,24 @@ int main(void) {
     push_key(SDLK_ESCAPE, 0);
     steps(&app, 1);
     CHECK(!ui_modal_is_open(&app.modal));
-    CHECK(app.ed.buf.nlines == 2);
+    CHECK(app.tabs[app.cur].buf.nlines == 2);
 
     // Mouse click in the editor area positions the cursor (2nd line start).
     // x must clear pad + line-number gutter (text starts at area_x).
     float gx = (float)(app.m.pad_x) +
-               (float)ui_gutter_w(&app.font, &app.m, app.ed.buf.nlines) +
+               (float)ui_gutter_w(&app.font, &app.m, app.tabs[app.cur].buf.nlines) +
                4.0f;
-    push_click(gx, (float)(28 + app.font.line_h + 2));
+    push_click(gx, (float)(app.m.menu_h + app.m.tab_h + app.font.line_h + 2));
     steps(&app, 1);
-    CHECK(app.ed.cursor == 6);
+    CHECK(app.tabs[app.cur].cursor == 6);
 
     // Ctrl+arrows reach word navigation (not swallowed as shortcuts).
     push_key(SDLK_LEFT, SDL_KMOD_CTRL);
     steps(&app, 1);
-    CHECK(app.ed.cursor == 0);
+    CHECK(app.tabs[app.cur].cursor == 0);
     push_key(SDLK_RIGHT, SDL_KMOD_CTRL);
     steps(&app, 1);
-    CHECK(app.ed.cursor == 6);
+    CHECK(app.tabs[app.cur].cursor == 6);
 
     // Empty-line select-all: the selection rect must not wrap when the
     // selection ends before an empty line starts (renders under ASan).
@@ -205,10 +205,10 @@ int main(void) {
     steps(&app, 1);
     push_key(SDLK_RETURN, 0);
     steps(&app, 1);
-    CHECK(app.ed.buf.nlines == 3);
+    CHECK(app.tabs[app.cur].buf.nlines == 3);
     push_key(SDLK_A, SDL_KMOD_CTRL);
     steps(&app, 2);
-    sel = editor_selection_text(&app.ed);
+    sel = editor_selection_text(&app.tabs[app.cur]);
     CHECK(sel && strcmp(sel, "\nhello\nworld") == 0);
     free(sel);
 
@@ -256,21 +256,18 @@ int main(void) {
         steps(&app, 1);
         CHECK(app.project.n == 3);
         // Row i occupies [menu_h + rh*(i+1), menu_h + rh*(i+2)).
+        // Clicking a file opens it in a FRESH tab (current tab keeps its
+        // unsaved changes, so no confirm modal appears).
+        size_t tabs_before = app.ntabs;
         float row2_y =
             (float)(app.m.menu_h + 3 * rh) + (float)rh / 2.0f;
-        // Doc is modified -> clicking a file asks for confirmation.
         push_click(100.0f, row2_y);
-        steps(&app, 1);
-        CHECK(ui_modal_is_open(&app.modal));
-        push_key(SDLK_ESCAPE, 0);
         steps(&app, 1);
         CHECK(!ui_modal_is_open(&app.modal));
-        // Save, then the click opens the file directly.
-        CHECK(editor_save_as(&app.ed, "/tmp/fn_doc.txt", err, sizeof(err)));
-        push_click(100.0f, row2_y);
-        steps(&app, 1);
-        CHECK(app.ed.buf.len == 4);
-        CHECK(memcmp(app.ed.buf.data, "AAA\n", 4) == 0);
+        CHECK(app.ntabs == tabs_before + 1);
+        CHECK(app.cur == app.ntabs - 1);
+        CHECK(app.tabs[app.cur].buf.len == 4);
+        CHECK(memcmp(app.tabs[app.cur].buf.data, "AAA\n", 4) == 0);
         // Ctrl+B toggles the sidebar.
         push_key(SDLK_B, SDL_KMOD_CTRL);
         steps(&app, 1);
@@ -278,7 +275,6 @@ int main(void) {
         push_key(SDLK_B, SDL_KMOD_CTRL);
         steps(&app, 1);
         CHECK(app.project.visible);
-        remove("/tmp/fn_doc.txt");
         remove("/tmp/fn_proj/sub/b.txt");
         remove("/tmp/fn_proj/a.txt");
         rmdir("/tmp/fn_proj/sub");
@@ -286,10 +282,44 @@ int main(void) {
     }
 
     // Highlight render path: a .c extension activates the C tokenizer.
-    CHECK(editor_save_as(&app.ed, "/tmp/fn_hl.c", err, sizeof(err)));
-    CHECK(app.ed.hl_lang == HLANG_C);
+    CHECK(editor_save_as(&app.tabs[app.cur], "/tmp/fn_hl.c", err, sizeof(err)));
+    CHECK(app.tabs[app.cur].hl_lang == HLANG_C);
     steps(&app, 2);
     remove("/tmp/fn_hl.c");
+
+    // Tabs: Ctrl+N appends an empty tab; typing goes there; Ctrl+Tab
+    // cycles both directions.
+    size_t tb0 = app.ntabs;
+    push_key(SDLK_N, SDL_KMOD_CTRL);
+    steps(&app, 1);
+    CHECK(app.ntabs == tb0 + 1 && app.cur == app.ntabs - 1);
+    CHECK(app.tabs[app.cur].buf.len == 0);
+    push_text("tab2");
+    steps(&app, 1);
+    CHECK(app.tabs[app.cur].buf.len == 4);
+    push_key(SDLK_TAB, SDL_KMOD_CTRL);
+    steps(&app, 1);
+    CHECK(app.cur == 0);
+    push_key(SDLK_TAB, (SDL_Keymod)(SDL_KMOD_CTRL | SDL_KMOD_SHIFT));
+    steps(&app, 1);
+    CHECK(app.cur == app.ntabs - 1);
+    sel = editor_selection_text(&app.tabs[app.cur]);
+    CHECK(sel == NULL); // no selection in the fresh tab
+    // Ctrl+W on the modified tab asks; cancel keeps it.
+    push_key(SDLK_W, SDL_KMOD_CTRL);
+    steps(&app, 1);
+    CHECK(ui_modal_is_open(&app.modal));
+    push_key(SDLK_ESCAPE, 0);
+    steps(&app, 1);
+    CHECK(!ui_modal_is_open(&app.modal));
+    CHECK(app.ntabs == tb0 + 1);
+    // Save, then Ctrl+W closes outright.
+    CHECK(editor_save_as(&app.tabs[app.cur], "/tmp/fn_tab.txt", err,
+                         sizeof(err)));
+    push_key(SDLK_W, SDL_KMOD_CTRL);
+    steps(&app, 1);
+    CHECK(app.ntabs == tb0 && app.cur == app.ntabs - 1);
+    remove("/tmp/fn_tab.txt");
 
     // Pathological single line stays renderable (bounded line walks).
     {
@@ -298,11 +328,11 @@ int main(void) {
         CHECK(xs != NULL);
         if (xs) {
             memset(xs, 'x', big);
-            CHECK(editor_insert(&app.ed, xs, big));
+            CHECK(editor_insert(&app.tabs[app.cur], xs, big));
             free(xs);
             steps(&app, 2);
             // Appended at end of a.txt (no active selection to replace).
-            CHECK(app.ed.buf.len == 4 + big);
+            CHECK(app.tabs[app.cur].buf.len == 4 + big);
         }
     }
 
@@ -313,15 +343,24 @@ int main(void) {
     wev.wheel.y = 3.0f;
     CHECK(SDL_PushEvent(&wev));
     steps(&app, 1);
-    CHECK(app.ed.scroll_line == 0);
+    CHECK(app.tabs[app.cur].scroll_line == 0);
 
-    // Save to a temp path, then quit cleanly via the window path.
-    CHECK(editor_save_as(&app.ed, "/tmp/fn_itest.txt", err, sizeof(err)));
+    // Save every remaining tab, then quit cleanly via the window path.
+    for (size_t t = 0; t < app.ntabs; t++) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "/tmp/fn_q%zu.txt", t);
+        CHECK(editor_save_as(&app.tabs[t], tmp, err, sizeof(err)));
+    }
     push_quit();
     steps(&app, 1);
     CHECK(!app.running);
 
     app_quit(&app);
+    for (size_t t = 0; t < 4; t++) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "/tmp/fn_q%zu.txt", t);
+        remove(tmp);
+    }
     remove("/tmp/fn_itest.txt");
     if (failures == 0)
         printf("all integration tests passed\n");

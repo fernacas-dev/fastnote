@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "editor.h"
 #include "font.h"
 #include "theme.h"
 
@@ -27,6 +28,9 @@ typedef enum {
     ACT_OPEN_FOLDER,
     ACT_TOGGLE_SIDEBAR,
     ACT_TOGGLE_HL,
+    ACT_CLOSE_TAB,
+    ACT_TAB_NEXT,
+    ACT_TAB_PREV,
 } MenuAction;
 
 typedef struct {
@@ -47,6 +51,7 @@ typedef struct {
 typedef struct {
     float scale;
     int menu_h;
+    int tab_h;
     int status_h;
     int pad_x;
     int cursor_w;
@@ -77,6 +82,19 @@ static inline void ui_menu_close(MenuState *st) {
 // True when the point hits the menu bar or the open dropdown.
 bool ui_point_in_chrome(MenuState *st, Font *f, const UiMetrics *m, float x,
                         float y, int win_w);
+
+// --- Tab strip (one tab per open document) ---
+typedef enum { TABACT_NONE, TABACT_SWITCH, TABACT_CLOSE } TabClick;
+// Draw the strip in [x0, win_w) x [y0, y0 + m->tab_h). Tabs share the
+// width evenly (shrunk when crowded); labels clip to their tab.
+void ui_draw_tabs(SDL_Renderer *ren, Font *f, const Theme *th,
+                  const UiMetrics *m, const Editor *tabs, int ntabs, int cur,
+                  float x0, float y0, float win_w);
+// Hit-test a click (framebuffer coordinates). Returns the action and, for
+// SWITCH/CLOSE, the tab index in *idx.
+TabClick ui_tab_click(const UiMetrics *m, const Editor *tabs, int ntabs,
+                      float x0, float y0, float win_w, float x, float y,
+                      int *idx);
 
 // --- Modal dialogs (in-app Save/Discard/Cancel + error popups) ---
 typedef enum { MODAL_NONE, MODAL_CONFIRM, MODAL_ERROR } ModalKind;

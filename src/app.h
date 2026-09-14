@@ -19,13 +19,19 @@ typedef enum {
     AFTER_NEW,
     AFTER_OPEN,
     AFTER_EXIT,
+    AFTER_CLOSE,
 } AfterAction;
 
 typedef struct App {
     SDL_Window *win;
     SDL_Renderer *ren;
     Font font;
-    Editor ed;
+    // Open documents: one Editor per tab. tabs[cur] is the active one.
+    Editor *tabs;
+    size_t ntabs;
+    size_t tabs_cap;
+    size_t cur;
+    bool exit_mode; // quitting: confirming unsaved tabs one by one
     Theme theme;
     Project project;
     MenuState menu;

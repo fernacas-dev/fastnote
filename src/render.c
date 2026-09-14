@@ -37,7 +37,7 @@ static SDL_Color hl_kind_color(const App *app, uint8_t kind) {
 // All coordinates are framebuffer (physical) pixels.
 static void draw_line(App *app, size_t line, float top_y, float area_x,
                       float area_w, int tab_w) {
-    Editor *e = &app->ed;
+    Editor *e = &app->tabs[app->cur];
     Font *f = &app->font;
     SDL_Renderer *ren = app->ren;
     float baseline = top_y + (float)f->asc;
@@ -47,7 +47,7 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
 
     // Tokenize this line when its block state is known. Kinds cover the
     // first HL_KINDS_CAP bytes; anything past that draws unhighlighted.
-    HlLang lang = app->ed.hl_on ? app->ed.hl_lang : HLANG_NONE;
+    HlLang lang = app->tabs[app->cur].hl_on ? app->tabs[app->cur].hl_lang : HLANG_NONE;
     const uint8_t *kinds = NULL;
     size_t scanned = 0;
     if (lang != HLANG_NONE && e->buf.lstate && line <= e->hl_clean) {
@@ -144,7 +144,7 @@ static void draw_line(App *app, size_t line, float top_y, float area_x,
 }
 
 bool render_frame(App *app) {
-    Editor *e = &app->ed;
+    Editor *e = &app->tabs[app->cur];
     Font *f = &app->font;
     SDL_Renderer *ren = app->ren;
     const UiMetrics *m = &app->m;
@@ -153,8 +153,8 @@ bool render_frame(App *app) {
 
     int side = (app->project.has && app->project.visible) ? m->sidebar_w : 0;
     int gutter = ui_gutter_w(f, m, e->buf.nlines);
-    float area_y = (float)m->menu_h;
-    float area_h = (float)(app->win_h - m->menu_h - m->status_h);
+    float area_y = (float)(m->menu_h + m->tab_h);
+    float area_h = (float)(app->win_h - m->menu_h - m->tab_h - m->status_h);
     float area_x = (float)m->pad_x + (float)(side + gutter);
     float area_w = (float)app->win_w - area_x - (float)m->pad_x / 2.0f;
     if (area_w < 0)
@@ -186,6 +186,13 @@ bool render_frame(App *app) {
         project_draw(ren, f, &app->theme, m, &app->project, m->menu_h,
                      app->win_h - m->status_h,
                      e->has_path ? e->path : NULL);
+    }
+
+    // Tab strip under the menu bar, right of the sidebar.
+    if (app->ntabs > 0) {
+        ui_draw_tabs(ren, f, &app->theme, m, app->tabs, (int)app->ntabs,
+                     (int)app->cur, (float)side, (float)m->menu_h,
+                     (float)app->win_w);
     }
 
     // Visible lines only.

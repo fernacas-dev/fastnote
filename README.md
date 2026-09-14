@@ -62,6 +62,8 @@ fastnote [options] [file]
 | New / Open / Save / Save As / Exit | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+Q |
 | Undo / Redo | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y |
 | Cut / Copy / Paste / Select All | Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+A |
+| New tab / Close tab | Ctrl+N / Ctrl+W |
+| Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Word jump | Ctrl+Left / Ctrl+Right |
 | Doc start / end | Ctrl+Home / Ctrl+End |
 | Page up / down | PageUp / PageDown |
@@ -73,6 +75,19 @@ fastnote [options] [file]
 Text entry goes through SDL text-input events, so UTF-8, layouts and
 accented keys work. Window title shows `*` for modified documents; New,
 Open and Exit ask Save/Discard/Cancel when unsaved changes exist.
+
+## Tabs
+
+One `Editor` per open document (`App.tabs`): each tab keeps its own text,
+cursor, selection, scroll, undo history and highlight state. `Ctrl+N`
+opens an empty tab (reusing the current one when it is an untouched
+untitled document); `File → Open` and sidebar clicks open files in a fresh
+tab the same way. The strip under the menu bar shows basenames (`*` when
+modified, clipped with a per-tab `×`); click switches, `×`/`Ctrl+W` closes
+with Save/Discard/Cancel when modified (closing the last tab resets it in
+place). `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle. Quitting with unsaved tabs
+confirms them one by one (Save All semantics per tab: untitled tabs fall
+back to the save dialog and the exit resumes afterwards).
 
 ## Architecture
 
